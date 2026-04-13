@@ -1,0 +1,12 @@
+dp_clock shows the time on a DisplayPad button.
+
+The appearance of the clock can be configured through the action
+associated with the key.
+Possible values are:
+sec - shows seconds
+12h - shows a 12 hour AM/PM clock (default is to show a 24 hour clock)
+date - shows the date below the time
+These values can be combined with a , symbol (e.g. sec,date)
+
+IF the action value is empty a standard 24 hour clock showing
+hour and minues is shown.
