@@ -7,6 +7,9 @@ Action value controls the format (comma-separated flags):
   date        → show date below the time
   12h,sec     → combine flags
 
+Press the assigned key to start a stopwatch on the button. Press again to
+stop — the elapsed time stays visible for 5 seconds, then the clock returns.
+
 Original idea and first implementation by FransM.
 """
 import hashlib
@@ -16,10 +19,6 @@ import time
 from datetime import datetime
 
 from PIL import Image, ImageDraw
-
-_timer_state = "off"
-_elapsed_time = 0
-_start_time = 0
 
 try:
     from PIL import ImageFont
@@ -53,17 +52,14 @@ _FG = (220, 220, 240)
 _CYAN = (14, 165, 233)
 _GRAY = (90, 90, 136)
 
+
 def _centered(draw, y, text, font, fill):
     tw = draw.textlength(text, font=font)
     draw.text(((102 - tw) / 2, y), text, fill=fill, font=font)
 
 
-def _render_clock(flags):
-    """Render a 102x102 clock image based on flags set."""
-    global _timer_state
-    global _elapsed_time
-    global _start_time
-
+def _render_clock(flags, timer_state="off", elapsed=0.0):
+    """Render a 102x102 clock image, or the stopwatch if timer is active."""
     now = datetime.now()
     show_sec = "sec" in flags
     show_12h = "12h" in flags
@@ -72,8 +68,7 @@ def _render_clock(flags):
     img = Image.new("RGB", (102, 102), _BG)
     draw = ImageDraw.Draw(img)
 
-    if _timer_state == "off":
-        # Time string
+    if timer_state == "off":
         if show_12h:
             hour = now.hour % 12 or 12
             ampm = "AM" if now.hour < 12 else "PM"
@@ -91,71 +86,49 @@ def _render_clock(flags):
                 time_str = f"{now.hour:02d}:{now.minute:02d}"
                 sec_str = None
 
-        # Layout depends on what's shown
         if show_date and sec_str:
-            # Time + seconds/ampm + date → pack tighter
             _centered(draw, 18, time_str, _FONT_TIME, _FG)
             _centered(draw, 48, sec_str, _FONT_SEC, _CYAN)
             date_str = now.strftime("%d %b %Y")
             _centered(draw, 72, date_str, _FONT_DATE, _GRAY)
         elif show_date:
-            # Time + date
             _centered(draw, 22, time_str, _FONT_TIME, _FG)
             date_str = now.strftime("%d %b %Y")
             _centered(draw, 62, date_str, _FONT_DATE, _GRAY)
         elif sec_str:
-            # Time + seconds/ampm
             _centered(draw, 28, time_str, _FONT_TIME, _FG)
             _centered(draw, 60, sec_str, _FONT_SEC, _CYAN)
         else:
-            # Just time, centered
             _centered(draw, 34, time_str, _FONT_TIME, _FG)
 
     else:
-        if _timer_state == "running":
-            _elapsed_time = time.time() - _start_time
-        minutes = int(_elapsed_time // 60)
-        secs = int(_elapsed_time % 60)
-        millis = int((_elapsed_time % 1) * 100)
+        minutes = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        millis = int((elapsed % 1) * 100)
         time_str = f"{minutes:02d}:{secs:02d}.{millis:02d}"
-
         _centered(draw, 50, time_str, _FONT_SEC, _FG)
 
     return img
 
 
-def _stop_timer():
-    global _timer_state
-
-    time.sleep(5)
-    if _timer_state == "stopping":
-        _timer_state = "off"
-
-
 class Plugin:
     panel_id = "dp_clock"
     panel_label = "DP Clock"
-    cfg = {}
-
 
     def __init__(self, ctx):
         self.ctx = ctx
         self._stop = threading.Event()
         self._hashes = {}
+        self._timer_state = "off"   # "off" | "running" | "stopping"
+        self._elapsed = 0.0
+        self._start_time = 0.0
 
         ctx.register_translations({
-            "en": {
-                "clock_display": "Clock",
-            },
-            "de": {
-                "clock_display": "Uhr",
-            }
+            "en": {"clock_display": "Clock"},
+            "de": {"clock_display": "Uhr"},
         })
 
         ctx.register_action_type("clock_display", ctx.T("clock_display"), self.on_press)
-
-    def optionmenu_callback(choice):
-        print("optionmenu dropdown clicked:", choice)
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
@@ -165,27 +138,28 @@ class Plugin:
 
     def _loop(self):
         while not self._stop.is_set():
+            if self._timer_state == "running":
+                self._elapsed = time.time() - self._start_time
             self._update()
-            if _timer_state == "off":
-                # Update every second if any clock shows seconds, else every 10s
-                self._stop.wait(1)
-            else:
-                self._stop.wait(0.1)
+            # While the stopwatch runs we redraw fast; otherwise once per second.
+            self._stop.wait(0.1 if self._timer_state != "off" else 1)
 
     def on_press(self, action_value):
-        global _timer_state
-        global _elapsed_time
-        global _start_time
-
-        if _timer_state != "running":
-            _timer_state = "running"
-            _start_time = time.time()
-            _elapsed_time = 0
+        if self._timer_state != "running":
+            self._timer_state = "running"
+            self._start_time = time.time()
+            self._elapsed = 0.0
         else:
-            _timer_state = "stopping"
-            _elapsed_time = time.time() - _start_time
-            thread = threading.Thread(target=_stop_timer)
-            thread.start()
+            self._timer_state = "stopping"
+            self._elapsed = time.time() - self._start_time
+            threading.Thread(target=self._revert_after_delay, daemon=True).start()
+
+    def _revert_after_delay(self):
+        # Hold the final time on screen, then drop back to the clock.
+        if self._stop.wait(5):
+            return
+        if self._timer_state == "stopping":
+            self._timer_state = "off"
 
     def _update(self):
         try:
@@ -200,13 +174,11 @@ class Plugin:
             if act.get("type") != "clock_display":
                 continue
 
-            # Parse flags from action value
             val = act.get("action", "").strip().lower()
             flags = set(f.strip() for f in val.split(",") if f.strip())
 
-            img = _render_clock(flags)
+            img = _render_clock(flags, self._timer_state, self._elapsed)
 
-            # Only push if image changed
             raw = img.tobytes()
             h = hashlib.md5(raw).hexdigest()
             if self._hashes.get(i) == h:
