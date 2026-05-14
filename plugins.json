@@ -23,6 +23,14 @@
       "description": "Live clock on DisplayPad buttons — seconds, AM/PM, date, plus a built-in stopwatch",
       "author": "FransM",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_clock"
+    },
+    {
+      "id": "snippets",
+      "name": "Snippets",
+      "version": "1.0",
+      "description": "Text expander — bind DisplayPad buttons to multi-line snippets with {date}/{time}/{clipboard}/{cursor} placeholders",
+      "author": "BaseCamp Linux",
+      "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/snippets"
     }
   ]
 }
