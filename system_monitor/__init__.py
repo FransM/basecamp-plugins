@@ -112,20 +112,50 @@ def _get_cpu_temp():
     if not psutil:
         return None, "CPU"
     temps = psutil.sensors_temperatures()
-    # Prefer k10temp (AMD) or coretemp (Intel)
+    # Prefer k10temp (AMD) or coretemp (Intel). Always label as "CPU" —
+    # raw labels like "Package id 0" or "Tctl" aren't useful on a 102x102 tile.
     for name in ("k10temp", "coretemp"):
         if name in temps:
             for e in temps[name]:
                 if e.current > 0:
-                    lbl = "CPU" if not e.label else e.label
-                    return e.current, lbl
+                    return e.current, "CPU"
     # Fallback: first sensor with reading
     for name, entries in temps.items():
         for e in entries:
             if e.current > 0:
-                lbl = e.label if e.label else name
-                return e.current, lbl
+                return e.current, "CPU"
     return None, "CPU"
+
+
+def _list_disk_mountpoints():
+    """Return [(display_label, mountpoint)] for fixed local partitions.
+
+    Used by the button-action editor as `value_options` for "mon_disk" so the
+    user can pick from a dropdown instead of typing a path. Skips loop, snap,
+    tmpfs and similar virtual filesystems that wouldn't be useful to monitor.
+    """
+    if not psutil:
+        return []
+    skip_fs = {"squashfs", "tmpfs", "devtmpfs", "overlay", "proc", "sysfs",
+               "cgroup", "cgroup2", "ramfs", "fuse.gvfsd-fuse", "fuse.portal",
+               "autofs", "binfmt_misc", "debugfs", "tracefs", "pstore",
+               "configfs", "mqueue", "hugetlbfs", "bpf"}
+    out = []
+    seen = set()
+    for p in psutil.disk_partitions(all=False):
+        if p.fstype in skip_fs or not p.mountpoint:
+            continue
+        if p.mountpoint in seen:
+            continue
+        seen.add(p.mountpoint)
+        try:
+            total_gb = psutil.disk_usage(p.mountpoint).total / (1024 ** 3)
+            label = f"{p.mountpoint}  ({total_gb:.0f} GB, {p.fstype})"
+        except Exception:
+            label = p.mountpoint
+        out.append((label, p.mountpoint))
+    out.sort(key=lambda x: (x[1] != "/", x[1]))
+    return out
 
 
 def _get_gpu_temp():
@@ -171,7 +201,8 @@ class Plugin:
         ctx.register_action_type("mon_ram", ctx.T("mon_ram"), lambda v: None)
         ctx.register_action_type("mon_temp", ctx.T("mon_temp"), lambda v: None)
         ctx.register_action_type("mon_gpu", ctx.T("mon_gpu"), lambda v: None)
-        ctx.register_action_type("mon_disk", ctx.T("mon_disk"), lambda v: None)
+        ctx.register_action_type("mon_disk", ctx.T("mon_disk"), lambda v: None,
+                                 value_options=_list_disk_mountpoints)
 
     def create_panel(self, parent):
         # No panel needed — pure DisplayPad widget

@@ -1,7 +1,7 @@
 {
   "id": "system_monitor",
   "name": "System Monitor",
-  "version": "1.0",
+  "version": "1.1",
   "author": "BaseCamp Linux",
   "description": "Live CPU, RAM, GPU temperature and disk usage on DisplayPad buttons",
   "help": "Assign 'Monitor: CPU', 'Monitor: RAM', 'Monitor: Temp' or 'Monitor: Disk' actions to DisplayPad buttons. The plugin updates the buttons every 2 seconds with live stats.",
