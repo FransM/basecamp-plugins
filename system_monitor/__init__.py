@@ -2,6 +2,7 @@
 import hashlib
 import os
 import threading
+import time
 
 try:
     import psutil
@@ -171,6 +172,29 @@ def _get_gpu_temp():
     return None, "GPU"
 
 
+def _parse_cycle_opts(val, default_interval=5):
+    """Parse a cycling action value into (interval_seconds, unit).
+
+    Tokens may appear in any order, comma- or semicolon-separated: 'C'/'F' set
+    the temperature unit, a number sets the switch interval in seconds.
+      ''    -> (5, 'C')      'F'   -> (5, 'F')
+      'F,3' -> (3, 'F')      '8'   -> (8, 'C')
+    Interval is clamped to at least the 2s update tick so a switch is visible."""
+    interval, unit = default_interval, "C"
+    for tok in (val or "").replace(";", ",").split(","):
+        tok = tok.strip().upper()
+        if not tok:
+            continue
+        if tok in ("C", "F"):
+            unit = tok
+        else:
+            try:
+                interval = max(2.0, float(tok))
+            except ValueError:
+                pass
+    return interval, unit
+
+
 class Plugin:
     panel_id = "system_monitor"
     panel_label = "System Monitor"
@@ -186,14 +210,18 @@ class Plugin:
                 "mon_ram":  "Monitor: RAM",
                 "mon_temp": "Monitor: CPU Temp",
                 "mon_gpu":  "Monitor: GPU Temp",
+                "mon_temp_both": "Monitor: CPU+GPU Temp",
                 "mon_disk": "Monitor: Disk",
+                "mon_disk_cycle": "Monitor: Disks (cycle)",
             },
             "de": {
                 "mon_cpu":  "Monitor: CPU",
                 "mon_ram":  "Monitor: RAM",
                 "mon_temp": "Monitor: CPU Temp",
                 "mon_gpu":  "Monitor: GPU Temp",
+                "mon_temp_both": "Monitor: CPU+GPU Temp",
                 "mon_disk": "Monitor: Festplatte",
+                "mon_disk_cycle": "Monitor: Festplatten (Wechsel)",
             }
         })
 
@@ -201,8 +229,12 @@ class Plugin:
         ctx.register_action_type("mon_ram", ctx.T("mon_ram"), lambda v: None)
         ctx.register_action_type("mon_temp", ctx.T("mon_temp"), lambda v: None)
         ctx.register_action_type("mon_gpu", ctx.T("mon_gpu"), lambda v: None)
+        # CPU+GPU on one key, alternating every N seconds (issue #7).
+        ctx.register_action_type("mon_temp_both", ctx.T("mon_temp_both"), lambda v: None)
         ctx.register_action_type("mon_disk", ctx.T("mon_disk"), lambda v: None,
                                  value_options=_list_disk_mountpoints)
+        # Cycle through every mounted filesystem on one key (issue #3 follow-up).
+        ctx.register_action_type("mon_disk_cycle", ctx.T("mon_disk_cycle"), lambda v: None)
 
     def create_panel(self, parent):
         # No panel needed — pure DisplayPad widget
@@ -261,6 +293,19 @@ class Plugin:
                 if temp is not None:
                     img = _render_temp(label, temp, unit)
 
+            elif atype == "mon_temp_both":
+                # Alternate CPU/GPU temp on one key every `interval` seconds,
+                # phased on wall-clock so it stays steady across redraws (#7).
+                interval, unit = _parse_cycle_opts(act.get("action", ""))
+                cpu_first = int(time.time() / interval) % 2 == 0
+                primary, secondary = ((_get_cpu_temp, _get_gpu_temp) if cpu_first
+                                      else (_get_gpu_temp, _get_cpu_temp))
+                temp, label = primary()
+                if temp is None:                      # sensor missing this phase
+                    temp, label = secondary()         # fall back to the other
+                if temp is not None:
+                    img = _render_temp(label, temp, unit)
+
             elif atype == "mon_disk":
                 path = act.get("action", "/") or "/"
                 try:
@@ -270,6 +315,20 @@ class Plugin:
                                        usage.free / (1024**3))
                 except Exception:
                     pass
+
+            elif atype == "mon_disk_cycle":
+                # Rotate through every mounted filesystem on one key (#3 f/u).
+                interval, _u = _parse_cycle_opts(act.get("action", ""))
+                disks = _list_disk_mountpoints()
+                if disks:
+                    _lbl, mount = disks[int(time.time() / interval) % len(disks)]
+                    try:
+                        usage = psutil.disk_usage(mount)
+                        name = "DISK" if mount == "/" else (os.path.basename(mount) or mount)
+                        img = _render_disk(name, usage.percent,
+                                           usage.free / (1024**3))
+                    except Exception:
+                        pass
 
             if img is None:
                 continue

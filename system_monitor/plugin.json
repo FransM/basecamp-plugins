@@ -1,10 +1,10 @@
 {
   "id": "system_monitor",
   "name": "System Monitor",
-  "version": "1.1",
+  "version": "1.2",
   "author": "BaseCamp Linux",
-  "description": "Live CPU, RAM, GPU temperature and disk usage on DisplayPad buttons",
-  "help": "Assign 'Monitor: CPU', 'Monitor: RAM', 'Monitor: Temp' or 'Monitor: Disk' actions to DisplayPad buttons. The plugin updates the buttons every 2 seconds with live stats.",
+  "description": "Live CPU, RAM, GPU/CPU temperature and disk usage on DisplayPad buttons",
+  "help": "Assign 'Monitor: CPU', 'Monitor: RAM', 'Monitor: CPU Temp', 'Monitor: GPU Temp' or 'Monitor: Disk' to DisplayPad buttons; the tiles update every 2 seconds. 'Monitor: CPU+GPU Temp' shows both on one key, switching every N seconds (action value e.g. 'F,5' = Fahrenheit, 5s). 'Monitor: Disks (cycle)' rotates through every mounted filesystem (action value = seconds per disk).",
   "type": ["service", "action"],
   "entry": "__init__",
   "requires": ["psutil"]

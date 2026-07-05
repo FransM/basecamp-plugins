@@ -11,15 +11,15 @@
     {
       "id": "system_monitor",
       "name": "System Monitor",
-      "version": "1.1",
-      "description": "Live CPU, RAM, GPU temperature and disk usage on DisplayPad buttons",
+      "version": "1.2",
+      "description": "Live CPU, RAM, GPU/CPU temperature and disk usage on DisplayPad buttons",
       "author": "BaseCamp Linux",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/system_monitor"
     },
     {
       "id": "dp_clock",
       "name": "DisplayPad Clock",
-      "version": "1.2",
+      "version": "1.2.1",
       "description": "Live clock on DisplayPad buttons — seconds, AM/PM, date, plus a built-in stopwatch",
       "author": "FransM",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_clock"

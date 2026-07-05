@@ -138,9 +138,19 @@ class Plugin:
 
     def _loop(self):
         while not self._stop.is_set():
-            if self._timer_state == "running":
-                self._elapsed = time.time() - self._start_time
-            self._update()
+            try:
+                if self._timer_state == "running":
+                    self._elapsed = time.time() - self._start_time
+                self._update()
+            except Exception as e:
+                # A transient error (DisplayPad busy, disk write, render) must
+                # never kill this daemon thread — that was issue #8, where the
+                # clock "suddenly stopped" and only a disable/enable (which
+                # restarts the thread) brought it back. Log and keep ticking.
+                try:
+                    print(f"[dp_clock] update error (continuing): {e}", flush=True)
+                except Exception:
+                    pass
             # While the stopwatch runs we redraw fast; otherwise once per second.
             self._stop.wait(0.1 if self._timer_state != "off" else 1)
 
