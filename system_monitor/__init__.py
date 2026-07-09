@@ -1,6 +1,8 @@
 """System Monitor -- live CPU, RAM, temperature and disk on DisplayPad buttons."""
 import hashlib
 import os
+import shutil
+import subprocess
 import threading
 import time
 
@@ -159,12 +161,53 @@ def _list_disk_mountpoints():
     return out
 
 
+# nvidia-smi availability: None = not probed yet, True/False = cached result.
+# Probing once avoids spawning a doomed subprocess every 2s on non-NVIDIA hosts.
+_nvidia_smi = None
+
+
+def _nvidia_smi_temp():
+    """GPU temperature from nvidia-smi, or None.
+
+    psutil's hwmon sensors often expose only the integrated GPU on hybrid
+    laptops (the discrete NVIDIA card has no coretemp/amdgpu hwmon entry), so
+    on those machines `sensors_temperatures()` reports the wrong chip or nothing
+    (issue #10, FransM). nvidia-smi reads the discrete card directly."""
+    global _nvidia_smi
+    if _nvidia_smi is False:
+        return None
+    if _nvidia_smi is None:
+        _nvidia_smi = shutil.which("nvidia-smi") is not None
+        if not _nvidia_smi:
+            return None
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2)
+    except Exception:
+        return None
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return float(line)
+        except ValueError:
+            continue
+    return None
+
+
 def _get_gpu_temp():
-    """Get GPU temperature from amdgpu or nvidia."""
+    """Get GPU temperature. Prefers the discrete NVIDIA card via nvidia-smi
+    (issue #10), then falls back to psutil hwmon for AMD/Intel/nouveau."""
+    temp = _nvidia_smi_temp()
+    if temp is not None:
+        return temp, "GPU"
     if not psutil:
         return None, "GPU"
     temps = psutil.sensors_temperatures()
-    for name in ("amdgpu", "nvidia", "nouveau", "radeon"):
+    for name in ("amdgpu", "nvidia", "nouveau", "radeon", "i915", "intel_gpu"):
         if name in temps:
             for e in temps[name]:
                 if e.current > 0:
