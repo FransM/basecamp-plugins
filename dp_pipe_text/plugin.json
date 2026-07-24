@@ -1,0 +1,10 @@
+{
+  "id": "dp_pipe_text",
+  "name": "DisplayPad Pipe Text",
+  "version": "1.0",
+  "author": "FransM",
+  "description": "Renders text from a named pipe onto a DisplayPad key. Assign the 'Pipe Text' action type to a key and enter the pipe path in the action field. Supports multiline text and per-line formatting (color, font size, bold, alignment).",
+  "type": ["service", "action"],
+  "entry": "__init__",
+  "requires": ["Pillow"]
+}
