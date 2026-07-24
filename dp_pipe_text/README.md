@@ -125,10 +125,11 @@ the script, and the key updates every 10 seconds.
 
 ## Practical example: first CPU core (core 0) load
 
-`examples/core_load.py` shows the load of a given CPU core, updating every
-second, with the number turning green/yellow/red depending on how busy it
-is. It takes the core number as its first argument, and the pipe path (a
-second argument the plugin appends automatically) as its second:
+`examples/core_load.py` shows the load **and temperature** of a given CPU
+core, updating every second, with each number turning green/yellow/red
+depending on how high it is. It takes the core number as its first
+argument, and the pipe path (a second argument the plugin appends
+automatically) as its second:
 
 ```
 /tmp/dp_core0.pipe;python3 examples/core_load.py 0
@@ -143,13 +144,18 @@ python3 examples/core_load.py 0 /tmp/dp_core0.pipe
 ```
 
 It uses `psutil` (already bundled with the BaseCamp Linux AppImage) to read
-per-core usage and writes a directive plus two lines to the pipe every
-second, e.g.:
+per-core usage and, where available, per-core temperature (via
+`psutil.sensors_temperatures()`, using whatever the kernel's `coretemp` /
+`k10temp` driver reports for that core, falling back to an overall CPU
+temperature, or showing "N/A" if no sensor is available -- which is normal
+inside VMs and containers). It writes a JSON message to the pipe every
+second so the core label, load, and temperature can each have their own
+color, e.g. rendering something like:
 
 ```
-#!color=#22c55e;size=16;align=center
 CORE 0
-23%
+42%
+58°C
 ```
 
 ## How it works internally
