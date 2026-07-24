@@ -100,6 +100,28 @@ done
 Assign "Pipe Text" to a key with action value `/tmp/dp_status.pipe`, run
 the script, and the key updates every 10 seconds.
 
+## Practical example: CPU core load
+
+`examples/core_load.py` shows the load of the designated CPU core,
+updating every second, with the number turning green/yellow/red depending
+on how busy it is. For core 0:
+
+```bash
+python3 examples/core_load.py 0 /tmp/dp_core0.pipe
+```
+
+Assign "Pipe Text" to a key with action value `/tmp/dp_core0.pipe` first,
+give the plugin a couple of seconds to create the pipe, then start the
+script. It uses `psutil` (already bundled with the BaseCamp Linux AppImage)
+to read per-core usage and writes a directive plus two lines to the pipe
+every second, e.g.:
+
+```
+#!color=#22c55e;size=16;align=center
+CORE 0
+23%
+```
+
 ## How it works internally
 
 Like `dp_clock`, this plugin registers an action type (`pipe_text`) and runs
