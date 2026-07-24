@@ -10,6 +10,7 @@ Optional plugins for [BaseCamp Linux](https://github.com/ramisotti13-eng/BaseCam
 | [System Monitor](system_monitor/) | Live CPU, RAM, GPU temp and disk usage on DisplayPad |
 | [DisplayPad Clock](dp_clock/) | Live clock on DisplayPad — seconds, AM/PM, date display, plus a built-in stopwatch |
 | [Snippets](snippets/) | Text expander — bind DisplayPad buttons to multi-line snippets with `{date}` / `{clipboard}` / `{cursor}` placeholders |
+| [Pipe Text](dp_pipe_text/) | Allows writing arbitrary text on a DisplayPad button by sending it to a pipe |
 
 ## Installation
 
