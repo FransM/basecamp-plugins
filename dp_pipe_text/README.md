@@ -19,25 +19,48 @@ Restart BaseCamp Linux. Requires `Pillow` (bundled with the AppImage).
 
 ## Usage
 
+The action field takes one of two forms:
+
+```
+<pipe-path>
+<pipe-path>;<shell command>
+```
+
 1. Open the DisplayPad action config and pick **"Pipe Text"** as the type
    for a key.
-2. In the action field, enter a pipe path, e.g.:
+2. **Just a pipe path** -- the plugin only creates the FIFO and reads from
+   it; you write to it yourself:
 
    ```
    /tmp/dp_status.pipe
    ```
 
-3. The plugin creates the FIFO automatically if it doesn't exist yet, and
-   continuously reads whatever is written to it, rendering the result onto
-   that key.
-
    ```bash
    echo "Build OK" > /tmp/dp_status.pipe
    ```
 
+3. **A pipe path followed by `;` and a command** -- the plugin creates the
+   FIFO *and* launches the command for you, automatically appending the
+   pipe path as an extra argument:
+
+   ```
+   /tmp/dp_core0.pipe;python3 core_load.py 0
+   ```
+
+   is equivalent to manually creating `/tmp/dp_core0.pipe` and running:
+
+   ```bash
+   python3 core_load.py 0 /tmp/dp_core0.pipe
+   ```
+
+   The command is started in its own process group, so it (and anything it
+   spawns) is cleanly terminated if you change the action field, remove the
+   action, or close the app.
+
 Each key with a "Pipe Text" action gets its own independent reader thread
-for the path you assigned to it, so multiple keys can each show something
-different at the same time.
+(and, if a command is given, its own producer process) for the path you
+assigned to it, so multiple keys can each show something different at the
+same time.
 
 Pressing the key clears it back to a blank background.
 
@@ -100,21 +123,28 @@ done
 Assign "Pipe Text" to a key with action value `/tmp/dp_status.pipe`, run
 the script, and the key updates every 10 seconds.
 
-## Practical example: CPU core load
+## Practical example: first CPU core (core 0) load
 
-`examples/core_load.py` shows the load of the designated CPU core,
-updating every second, with the number turning green/yellow/red depending
-on how busy it is. For core 0:
+`examples/core_load.py` shows the load of a given CPU core, updating every
+second, with the number turning green/yellow/red depending on how busy it
+is. It takes the core number as its first argument, and the pipe path (a
+second argument the plugin appends automatically) as its second:
+
+```
+/tmp/dp_core0.pipe;python3 examples/core_load.py 0
+```
+
+Just assign that as the action value for "Pipe Text" on a key -- the
+plugin creates the pipe and starts the script for you, running the
+equivalent of:
 
 ```bash
 python3 examples/core_load.py 0 /tmp/dp_core0.pipe
 ```
 
-Assign "Pipe Text" to a key with action value `/tmp/dp_core0.pipe` first,
-give the plugin a couple of seconds to create the pipe, then start the
-script. It uses `psutil` (already bundled with the BaseCamp Linux AppImage)
-to read per-core usage and writes a directive plus two lines to the pipe
-every second, e.g.:
+It uses `psutil` (already bundled with the BaseCamp Linux AppImage) to read
+per-core usage and writes a directive plus two lines to the pipe every
+second, e.g.:
 
 ```
 #!color=#22c55e;size=16;align=center
@@ -148,3 +178,7 @@ static image so it survives a page switch/reload.
   `printf ... > pipe &`.
 - Only one pipe path per key is supported at a time; assigning "Pipe Text"
   to the same key with a different path replaces the previous reader.
+- When using the `;<command>` form, the command runs with whatever working
+  directory the app itself was launched from -- use an absolute path to
+  your script (or `cd /your/script/dir && command`) if you're not sure
+  what that will be.

@@ -3,25 +3,49 @@
 This is an *action* plugin, following the same pattern as dp_clock: register
 an action type, then let the user assign it to any key (K1-K12) via the
 DisplayPad action config. The action value the user types in is not a
-sound file or a command -- it is the path to a named pipe (FIFO).
+sound file or a command by itself -- it is a pipe path, optionally followed
+by a producer command to run automatically.
+
+Action field syntax
+-------------------
+    <pipe-path>
+    <pipe-path>;<shell command>
+
+1. Just a pipe path (no ";"): the plugin only creates the FIFO and reads
+   from it. You are responsible for writing to it yourself:
+
+       /tmp/dp_status.pipe
+
+   echo "Build OK" > /tmp/dp_status.pipe
+
+2. A pipe path followed by ";" and a shell command: the plugin creates the
+   FIFO *and* launches the command for you, appending the pipe path as an
+   extra argument. This is meant for the common case where the pipe only
+   exists to feed one particular producer script:
+
+       /tmp/dp_core0.pipe;python3 core_load.py 0
+
+   is equivalent to manually creating /tmp/dp_core0.pipe and running:
+
+       python3 core_load.py 0 /tmp/dp_core0.pipe
+
+   The command runs in its own process group so it can be cleanly
+   terminated (including any children it spawns) when the pipe path
+   changes, the action is removed, or the app shuts down.
 
 Setup
 -----
 1. In the DisplayPad action config, pick "Pipe Text" as the type for a key.
-2. Enter a pipe path in the action field, e.g.:
-
-       /tmp/dp_status.pipe
-
+2. Enter a pipe path (optionally with ";<command>") in the action field.
 3. The plugin creates the FIFO automatically if it doesn't exist yet, and
    continuously reads whatever is written to it, rendering the result onto
    that key. Multiple keys can each have their own "Pipe Text" action with
    their own pipe path.
 
-   echo "Build OK" > /tmp/dp_status.pipe
-
-If you later change the pipe path in a key's action field, or remove the
-"Pipe Text" action from a key, the plugin deletes the old FIFO from disk
-(only if it's still a FIFO) so stale pipes don't accumulate.
+If you later change the action field on a key, or remove the "Pipe Text"
+action from it, the plugin stops the old reader (and the old command, if
+one was launched) and deletes the old FIFO from disk (only if it's still a
+FIFO) so stale pipes don't accumulate.
 
 Pressing the assigned key clears it back to a blank background.
 
@@ -70,7 +94,10 @@ import hashlib
 import json
 import os
 import select
+import shlex
+import signal
 import stat
+import subprocess
 import threading
 import time
 
@@ -218,6 +245,25 @@ def _parse_message(raw_text):
     return _normalize_spec(spec)
 
 
+def _parse_action(raw):
+    """Split a key's action field into (pipe_path, command).
+
+    Syntax: "<pipe-path>" or "<pipe-path>;<shell command>". Returns
+    (None, None) if raw is empty/blank.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None, None
+    if ";" in raw:
+        path_part, cmd_part = raw.split(";", 1)
+        path = os.path.expanduser(path_part.strip())
+        command = cmd_part.strip() or None
+    else:
+        path = os.path.expanduser(raw)
+        command = None
+    return (path or None), command
+
+
 def _wrap_line(draw, text, font, max_width):
     """Word-wrap text to fit max_width, hard-breaking words that are too long."""
     if not text:
@@ -289,7 +335,8 @@ class Plugin:
         self.ctx = ctx
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._readers = {}   # key_index -> {"path": str, "stop": Event, "thread": Thread}
+        self._readers = {}   # key_index -> {"path": str, "raw": str, "stop": Event, "thread": Thread}
+        self._procs = {}     # key_index -> Popen (producer command, if any)
         self._hashes = {}    # key_index -> last pushed image hash
 
         ctx.register_translations({
@@ -306,6 +353,8 @@ class Plugin:
         with self._lock:
             for info in self._readers.values():
                 info["stop"].set()
+            for key_index in list(self._procs):
+                self._stop_command(key_index)
 
     # ------------------------------------------------------------ scanner --
     # Watches the DisplayPad action config for keys assigned the "pipe_text"
@@ -336,30 +385,35 @@ class Plugin:
         for i, act in enumerate(actions):
             if act.get("type") != "pipe_text":
                 continue
-            path = act.get("action", "").strip()
+            raw = act.get("action", "").strip()
+            if not raw:
+                continue
+            path, command = _parse_action(raw)
             if not path:
                 continue
-            assigned[i] = os.path.expanduser(path)
+            assigned[i] = (path, command, raw)
 
         with self._lock:
-            for key_index, path in assigned.items():
+            for key_index, (path, command, raw) in assigned.items():
                 current = self._readers.get(key_index)
-                if current is not None and current["path"] == path:
+                if current is not None and current["raw"] == raw:
                     continue
                 if current is not None:
-                    # The action field was pointed at a different pipe --
-                    # stop the old reader and remove the old FIFO from disk
-                    # so stale pipes don't pile up.
+                    # The action field changed (pipe path and/or command) --
+                    # stop the old reader/command and remove the old FIFO
+                    # from disk so stale pipes don't pile up.
                     current["stop"].set()
                     self._remove_pipe_file(current["path"])
-                self._start_reader(key_index, path)
+                    self._stop_command(key_index)
+                self._start_reader(key_index, path, command, raw)
 
             gone = [k for k in self._readers if k not in assigned]
             for k in gone:
                 # The action was unassigned/removed from this key -- stop
-                # the reader and clean up the pipe it was using.
+                # the reader/command and clean up the pipe it was using.
                 self._readers[k]["stop"].set()
                 self._remove_pipe_file(self._readers[k]["path"])
+                self._stop_command(k)
                 del self._readers[k]
 
     def _remove_pipe_file(self, path):
@@ -371,7 +425,7 @@ class Plugin:
         except Exception as e:
             print(f"[dp_pipe_text] could not remove old pipe {path}: {e}", flush=True)
 
-    def _start_reader(self, key_index, path):
+    def _start_reader(self, key_index, path, command, raw):
         try:
             dirpath = os.path.dirname(path)
             if dirpath:
@@ -389,8 +443,43 @@ class Plugin:
         t = threading.Thread(
             target=self._reader_loop, args=(path, key_index, stop_event), daemon=True
         )
-        self._readers[key_index] = {"path": path, "stop": stop_event, "thread": t}
+        self._readers[key_index] = {"path": path, "raw": raw, "stop": stop_event, "thread": t}
         t.start()
+
+        if command:
+            self._start_command(key_index, path, command)
+
+    def _start_command(self, key_index, path, command):
+        """Launch the producer command, appending the pipe path as an
+        extra argument, e.g. "python3 core_load.py 0" + path becomes
+        "python3 core_load.py 0 /tmp/dp_core0.pipe"."""
+        full_cmd = f"{command} {shlex.quote(path)}"
+        try:
+            proc = subprocess.Popen(
+                full_cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,  # own process group, for clean teardown
+            )
+            self._procs[key_index] = proc
+            print(f"[dp_pipe_text] started command for key {key_index + 1}: {full_cmd}", flush=True)
+        except Exception as e:
+            print(f"[dp_pipe_text] failed to start command '{full_cmd}': {e}", flush=True)
+
+    def _stop_command(self, key_index):
+        proc = self._procs.pop(key_index, None)
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception as e:
+            print(f"[dp_pipe_text] error stopping command for key {key_index + 1}: {e}", flush=True)
 
     # ------------------------------------------------------------- reader --
 
@@ -445,7 +534,7 @@ class Plugin:
 
     def on_press(self, action_value):
         """Pressing the assigned key clears it back to a blank background."""
-        path = os.path.expanduser((action_value or "").strip())
+        path, _command = _parse_action(action_value)
         with self._lock:
             for key_index, info in self._readers.items():
                 if info["path"] == path:
