@@ -108,6 +108,19 @@ Top-level `color`/`size`/`align`/`bold` are the defaults; each entry in
 any of them individually. Long lines are word-wrapped automatically to fit
 the 102x102 key.
 
+### Back-to-back messages
+
+If a producer writes faster than a message can be rendered, or two writes
+land close together, a JSON message can arrive as several concatenated
+JSON values (e.g. `{...}{...}`) instead of one. The parser handles this by
+decoding as many complete JSON values as it finds and using only the
+*last* one -- older ones are simply superseded, never causing a parse
+error. Ending each message with a trailing newline (as `core_load.py` does)
+isn't required, but makes messages easier to tell apart if they ever do
+land back-to-back. Reading the pipe and rendering are also decoupled
+internally, so a slow render never delays picking up the next message --
+see "How it works internally" below.
+
 ## Practical example: CPU temperature every 10s
 
 ```bash
@@ -168,9 +181,17 @@ the old reader is stopped and a new one started automatically. If the
 action is removed from a key, its reader is stopped.
 
 Each reader opens its pipe non-blocking and uses `select()` so it can be
-shut down cleanly; a full message is whatever gets written between one pipe
-open and close (matching typical `echo ... > pipe` usage). Rendered frames
-are deduplicated by hash so unchanged content is not re-uploaded, and (like
+shut down cleanly; a message is whatever gets written between one pipe
+open and close (matching typical `echo ... > pipe` usage). The reader
+thread only ever grabs the raw bytes and hands them off -- it never parses
+or renders -- so it can reopen the pipe for the next writer immediately.
+
+A separate per-key render worker thread does the actual parsing and
+rendering. It always works on the most recently received message; if a
+newer one arrives while it's still busy with an older one, the older one
+is discarded rather than queued, so the key never falls behind under load
+and always ends up showing the latest state. Rendered frames are also
+deduplicated by hash so unchanged content is not re-uploaded, and (like
 `dp_clock`) the last frame is cached to disk and registered as the key's
 static image so it survives a page switch/reload.
 

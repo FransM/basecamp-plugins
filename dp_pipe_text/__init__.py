@@ -87,6 +87,27 @@ Two ways to write a message to the pipe:
 Sending an empty message (echo "" > pipe, or "{}") clears the key back to
 a blank background.
 
+Framing and back-to-back messages
+----------------------------------
+A message is whatever gets written to the pipe between one writer opening
+it and closing it again (the usual `echo ... > pipe` / `with open(...) as
+f: f.write(...)` pattern). If a producer writes messages faster than they
+can be rendered, or two writes end up landing back-to-back without a gap,
+a JSON message may arrive as several concatenated JSON values (e.g.
+"{...}{...}") rather than a single one. The parser handles this by
+decoding as many complete JSON values as it can find and using only the
+*last* one -- older, superseded values are discarded rather than causing a
+parse error. Producers are encouraged (but not required) to end each
+message with a trailing newline, which makes back-to-back messages easier
+to tell apart on the wire and in logs.
+
+Reading the pipe and rendering the image are also decoupled internally:
+a fast reader thread just grabs whatever was written and hands it off to a
+per-key render worker, which always renders the most recently received
+message and drops any older one still waiting -- so a slow render never
+holds the pipe closed longer than necessary, and the key always ends up
+showing the latest state rather than falling behind.
+
 Original idea and rendering approach inspired by dp_clock.
 """
 
@@ -212,6 +233,39 @@ def _normalize_spec(raw_spec):
     return {"bg": bg, "valign": valign, "lines": lines_out}
 
 
+_json_decoder = json.JSONDecoder()
+
+
+def _extract_last_json(text):
+    """Return the *last* complete JSON value found in text.
+
+    Handles the case where a buffer contains more than one JSON value
+    back-to-back with no separator (e.g. "{...}{...}") or separated by
+    whitespace/newlines (e.g. "{...}\\n{...}\\n") -- which can happen if a
+    producer writes faster than the pipe is drained. Earlier values are
+    superseded by later ones and simply discarded. Any trailing content
+    that isn't a complete JSON value is ignored. Returns None if no
+    complete JSON value could be found at all.
+    """
+    idx = 0
+    n = len(text)
+    last_value = None
+    found_any = False
+    while idx < n:
+        while idx < n and text[idx] in " \t\r\n":
+            idx += 1
+        if idx >= n or text[idx] not in "{[":
+            break
+        try:
+            value, end = _json_decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            break
+        last_value = value
+        found_any = True
+        idx = end
+    return last_value if found_any else None
+
+
 def _parse_message(raw_text):
     """Parse whatever a client wrote to the pipe into a canonical spec."""
     text = raw_text.rstrip("\n")
@@ -221,15 +275,12 @@ def _parse_message(raw_text):
         return _normalize_spec({"lines": []})
 
     if stripped[0] in "{[":
-        try:
-            data = json.loads(text)
-        except Exception:
-            data = None
+        data = _extract_last_json(text)
         if isinstance(data, list):
             return _normalize_spec({"lines": data})
         if isinstance(data, dict):
             return _normalize_spec(data)
-        # fall through to plain-text handling if JSON parsing failed
+        # fall through to plain-text handling if no JSON value parsed at all
 
     lines = text.split("\n")
     directive = {}
@@ -335,9 +386,13 @@ class Plugin:
         self.ctx = ctx
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._readers = {}   # key_index -> {"path": str, "raw": str, "stop": Event, "thread": Thread}
+        self._readers = {}   # key_index -> {"path": str, "raw": str, "stop": Event,
+                              #               "thread": Thread, "work_event": Event,
+                              #               "worker_thread": Thread}
         self._procs = {}     # key_index -> Popen (producer command, if any)
         self._hashes = {}    # key_index -> last pushed image hash
+        self._pending = {}        # key_index -> latest not-yet-rendered raw message
+        self._pending_lock = threading.Lock()
 
         ctx.register_translations({
             "en": {"pipe_text": "Pipe Text"},
@@ -405,6 +460,8 @@ class Plugin:
                     current["stop"].set()
                     self._remove_pipe_file(current["path"])
                     self._stop_command(key_index)
+                    with self._pending_lock:
+                        self._pending.pop(key_index, None)
                 self._start_reader(key_index, path, command, raw)
 
             gone = [k for k in self._readers if k not in assigned]
@@ -414,6 +471,8 @@ class Plugin:
                 self._readers[k]["stop"].set()
                 self._remove_pipe_file(self._readers[k]["path"])
                 self._stop_command(k)
+                with self._pending_lock:
+                    self._pending.pop(k, None)
                 del self._readers[k]
 
     def _remove_pipe_file(self, path):
@@ -440,11 +499,19 @@ class Plugin:
             return
 
         stop_event = threading.Event()
-        t = threading.Thread(
+        work_event = threading.Event()
+        reader_thread = threading.Thread(
             target=self._reader_loop, args=(path, key_index, stop_event), daemon=True
         )
-        self._readers[key_index] = {"path": path, "raw": raw, "stop": stop_event, "thread": t}
-        t.start()
+        worker_thread = threading.Thread(
+            target=self._render_worker, args=(key_index, stop_event, work_event), daemon=True
+        )
+        self._readers[key_index] = {
+            "path": path, "raw": raw, "stop": stop_event,
+            "thread": reader_thread, "work_event": work_event, "worker_thread": worker_thread,
+        }
+        reader_thread.start()
+        worker_thread.start()
 
         if command:
             self._start_command(key_index, path, command)
@@ -499,7 +566,7 @@ class Plugin:
             got_data = False
             try:
                 while not stop_event.is_set() and not self._stop.is_set():
-                    ready, _, _ = select.select([fd], [], [], 1.0)
+                    ready, _, _ = select.select([fd], [], [], 0.5)
                     if not ready:
                         continue
                     try:
@@ -519,16 +586,42 @@ class Plugin:
                 except OSError:
                     pass
 
+            # Hand the raw message off to this key's render worker and go
+            # straight back to the top of the loop to reopen the pipe --
+            # parsing/rendering never blocks the read side, so the pipe is
+            # available for the next writer again as fast as possible.
             if got_data:
-                try:
-                    self._handle_message(key_index, buf.decode("utf-8", errors="replace"))
-                except Exception as e:
-                    print(f"[dp_pipe_text] render error for key {key_index + 1}: {e}", flush=True)
+                self._handle_message(key_index, buf.decode("utf-8", errors="replace"))
 
     def _handle_message(self, key_index, raw_text):
-        spec = _parse_message(raw_text)
-        img = _render_spec(spec)
-        self._push_image(key_index, img)
+        """Stash the latest raw message and wake the render worker for this
+        key. Cheap and non-blocking -- any message not yet picked up by the
+        worker is simply overwritten, so only the freshest state survives."""
+        info = self._readers.get(key_index)
+        if info is None:
+            return
+        with self._pending_lock:
+            self._pending[key_index] = raw_text
+        info["work_event"].set()
+
+    def _render_worker(self, key_index, stop_event, work_event):
+        """Runs alongside the reader thread for this key. Renders and
+        pushes whatever is the most recently received message, never
+        falling behind on a backlog of stale ones."""
+        while not stop_event.is_set() and not self._stop.is_set():
+            if not work_event.wait(timeout=0.5):
+                continue
+            with self._pending_lock:
+                raw_text = self._pending.pop(key_index, None)
+                work_event.clear()
+            if raw_text is None:
+                continue
+            try:
+                spec = _parse_message(raw_text)
+                img = _render_spec(spec)
+                self._push_image(key_index, img)
+            except Exception as e:
+                print(f"[dp_pipe_text] render error for key {key_index + 1}: {e}", flush=True)
 
     # ----------------------------------------------------------- actions --
 

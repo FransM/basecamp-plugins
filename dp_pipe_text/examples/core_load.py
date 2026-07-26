@@ -116,7 +116,9 @@ def main():
 
         try:
             with open(pipe_path, "w") as f:
-                f.write(json.dumps(spec))
+                # A trailing newline makes back-to-back messages easier to
+                # tell apart if they ever land close together on the wire.
+                f.write(json.dumps(spec) + "\n")
         except FileNotFoundError:
             print(f"Pipe not found yet: {pipe_path} "
                   f"(waiting for the plugin to create it)")
