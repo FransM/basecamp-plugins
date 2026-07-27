@@ -413,9 +413,7 @@ class Plugin:
     def start(self):
         page = self.ctx.get_displaypad_current_page()
         _dbg(f"[DBG dp_pipe_text] start() called, current_page={page}")
-        self._stop.clear()  # was never reset after stop() -- every start()
-                             # after the first stop() spawned a scan thread
-                             # that saw _stop already set and exited instantly
+        self._stop.clear()
         threading.Thread(target=self._scan_loop, daemon=True).start()
 
     def stop(self):

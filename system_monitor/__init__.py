@@ -287,6 +287,7 @@ class Plugin:
         if not psutil:
             print("[system_monitor] psutil not installed, plugin disabled")
             return
+        self._stop.clear()
         threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):

@@ -476,6 +476,7 @@ class Plugin:
     # ── Service ──────────────────────────────────────────────────────────────
 
     def start(self):
+        self._stop.clear()
         if self._bridge_ip and self._api_key:
             threading.Thread(target=self._poll_loop, daemon=True).start()
 
