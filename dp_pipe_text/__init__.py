@@ -124,6 +124,16 @@ import time
 
 from PIL import Image, ImageDraw, ImageColor
 
+# Set BASECAMP_PAGE_DEBUG=1 in the environment to trace page-scoped start/
+# stop/render decisions for this plugin (also toggles matching trace lines
+# in shared/plugins.py and devices/displaypad/panel.py). Off by default.
+_DEBUG = os.environ.get("BASECAMP_PAGE_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _dbg(msg):
+    if _DEBUG:
+        print(msg, flush=True)
+
 try:
     from PIL import ImageFont
     _FONT_REGULAR_PATH = None
@@ -401,15 +411,28 @@ class Plugin:
         ctx.register_action_type("pipe_text", ctx.T("pipe_text"), self.on_press)
 
     def start(self):
+        page = self.ctx.get_displaypad_current_page()
+        _dbg(f"[DBG dp_pipe_text] start() called, current_page={page}")
+        self._stop.clear()  # was never reset after stop() -- every start()
+                             # after the first stop() spawned a scan thread
+                             # that saw _stop already set and exited instantly
         threading.Thread(target=self._scan_loop, daemon=True).start()
 
     def stop(self):
+        _dbg(f"[DBG dp_pipe_text] stop() called, tearing down readers={list(self._readers.keys())}")
         self._stop.set()
         with self._lock:
             for info in self._readers.values():
                 info["stop"].set()
             for key_index in list(self._procs):
                 self._stop_command(key_index)
+            # Drop state for the stopped readers so the next start()'s scan
+            # treats every currently-assigned key as new and spins up fresh
+            # reader/worker threads, instead of seeing a "current" entry
+            # with a matching raw value and skipping it as already running.
+            self._readers.clear()
+            self._pending.clear()
+            self._hashes.clear()
 
     # ------------------------------------------------------------ scanner --
     # Watches the DisplayPad action config for keys assigned the "pipe_text"
@@ -431,11 +454,11 @@ class Plugin:
 
     def _scan_once(self):
         try:
-            from shared.config import _load_displaypad_actions
-        except ImportError:
+            actions = self.ctx.get_displaypad_actions()
+        except Exception:
             return
-        actions = _load_displaypad_actions()
 
+        cur_page = self.ctx.get_displaypad_current_page()
         assigned = {}
         for i, act in enumerate(actions):
             if act.get("type") != "pipe_text":
@@ -448,10 +471,17 @@ class Plugin:
                 continue
             assigned[i] = (path, command, raw)
 
+        _dbg(f"[DBG dp_pipe_text] _scan_once: cur_page={cur_page} assigned={list(assigned.keys())} "
+              f"existing_readers={list(self._readers.keys())} _stop.is_set()={self._stop.is_set()}")
+
         with self._lock:
             for key_index, (path, command, raw) in assigned.items():
                 current = self._readers.get(key_index)
                 if current is not None and current["raw"] == raw:
+                    if current["page"] != cur_page:
+                        _dbg(f"[DBG dp_pipe_text] key={key_index}: same raw, "
+                              f"rebinding page {current['page']} -> {cur_page}")
+                        current["page"] = cur_page
                     continue
                 if current is not None:
                     # The action field changed (pipe path and/or command) --
@@ -489,11 +519,16 @@ class Plugin:
             dirpath = os.path.dirname(path)
             if dirpath:
                 os.makedirs(dirpath, exist_ok=True)
+            if os.path.exists(path) and not stat.S_ISFIFO(os.stat(path).st_mode):
+                # A regular file ended up at this path -- most likely a
+                # producer (or something else) opened it for writing with a
+                # plain open()/redirect after the FIFO was removed during a
+                # previous teardown, which silently recreates it as a plain
+                # file. Clear it out so we can make a real FIFO here.
+                print(f"[dp_pipe_text] {path} exists and is not a FIFO, removing stale file", flush=True)
+                os.remove(path)
             if not os.path.exists(path):
                 os.mkfifo(path)
-            elif not stat.S_ISFIFO(os.stat(path).st_mode):
-                print(f"[dp_pipe_text] {path} exists and is not a FIFO, skipping", flush=True)
-                return
         except Exception as e:
             print(f"[dp_pipe_text] could not prepare pipe {path}: {e}", flush=True)
             return
@@ -506,8 +541,14 @@ class Plugin:
         worker_thread = threading.Thread(
             target=self._render_worker, args=(key_index, stop_event, work_event), daemon=True
         )
+        # Captured once, at start time -- this plugin only runs while its own
+        # page is active (page-scoped start/stop), so "current page right
+        # now" is correct *at this instant*. Renders later on must use this
+        # captured value, not re-query the current page, since a switch may
+        # have already happened by the time a queued render is processed.
+        page = self.ctx.get_displaypad_current_page()
         self._readers[key_index] = {
-            "path": path, "raw": raw, "stop": stop_event,
+            "path": path, "raw": raw, "stop": stop_event, "page": page,
             "thread": reader_thread, "work_event": work_event, "worker_thread": worker_thread,
         }
         reader_thread.start()
@@ -616,10 +657,22 @@ class Plugin:
                 work_event.clear()
             if raw_text is None:
                 continue
+            # This key may have been torn down (page switch, re-scan, or
+            # stop()) while this message was queued. If so, this render no
+            # longer belongs to any page we should be touching -- drop it
+            # rather than push it and have it land on whatever page happens
+            # to be showing by now.
+            with self._lock:
+                info = self._readers.get(key_index)
+                if info is None:
+                    _dbg(f"[DBG dp_pipe_text] _render_worker key={key_index}: "
+                          f"reader gone, DROPPING stale render")
+                    continue
+                page = info["page"]
             try:
                 spec = _parse_message(raw_text)
                 img = _render_spec(spec)
-                self._push_image(key_index, img)
+                self._push_image(key_index, img, page)
             except Exception as e:
                 print(f"[dp_pipe_text] render error for key {key_index + 1}: {e}", flush=True)
 
@@ -632,30 +685,53 @@ class Plugin:
             for key_index, info in self._readers.items():
                 if info["path"] == path:
                     blank = Image.new("RGB", (_SIZE, _SIZE), _DEFAULT_BG)
-                    self._push_image(key_index, blank)
+                    self._push_image(key_index, blank, info["page"])
                     break
 
     # -------------------------------------------------------------- push --
 
-    def _push_image(self, key_index, img):
+    def _push_image(self, key_index, img, page):
+        dp = self.ctx.get_displaypad()
+        cur = getattr(dp, "_current_page", None) if dp else None
+        is_visible = (page == cur)
+        _dbg(f"[DBG dp_pipe_text] _push_image key={key_index} bound_page={page} "
+              f"device_current_page={cur} is_visible={is_visible}")
         raw = img.tobytes()
         h = hashlib.md5(raw).hexdigest()
         if self._hashes.get(key_index) == h:
             return
         self._hashes[key_index] = h
-        self.ctx.push_displaypad_image(key_index, img)
 
-        # Persist the rendered frame to disk and register it as the key's
-        # static image, so it survives a page switch/reload -- same trick
-        # dp_clock uses for its stopwatch frames.
+        # Only write to the physical key right now if the page we're
+        # rendering for is actually the one on screen. Physical keys are
+        # shared hardware slots across pages: pushing unconditionally here
+        # used to let a reader bound to a different (background) page paint
+        # over whatever key is currently visible on the page you're actually
+        # looking at -- the bookkeeping dicts below were already gated on
+        # this, but the real hardware write wasn't.
+        if is_visible:
+            self.ctx.push_displaypad_image(key_index, img)
+
+        # Persist the rendered frame to disk and register it as this key's
+        # static image on the page it's actually bound to (the page passed
+        # in, captured once when this reader was started -- never re-derived
+        # from "whatever page is active right now", since a page switch may
+        # have already happened by the time this render lands). Hardcoding
+        # page 0 here used to overwrite whatever image the *main* page had
+        # stored for the same physical key index, even when this plugin was
+        # running on a completely different page; re-deriving the page at
+        # push time instead of capturing it caused the same corruption for
+        # any render still in flight when a page switch landed. So it
+        # survives a page switch/reload without leaking onto another page --
+        # same trick dp_clock uses for its stopwatch frames.
         try:
             from shared.config import CONFIG_DIR
             img_path = os.path.join(CONFIG_DIR, f"dp_pipe_text_{key_index}.png")
             img.save(img_path)
-            dp = self.ctx.get_displaypad()
             if dp:
-                dp._images[str(key_index)] = img_path
-                if hasattr(dp, "_page_images") and 0 in dp._page_images:
-                    dp._page_images[0][str(key_index)] = img_path
+                if is_visible:
+                    dp._images[str(key_index)] = img_path
+                if hasattr(dp, "_page_images"):
+                    dp._page_images.setdefault(page, {})[str(key_index)] = img_path
         except Exception:
             pass
