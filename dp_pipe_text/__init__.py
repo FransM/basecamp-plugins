@@ -400,7 +400,7 @@ class Plugin:
                               #               "thread": Thread, "work_event": Event,
                               #               "worker_thread": Thread}
         self._procs = {}     # key_index -> Popen (producer command, if any)
-        self._hashes = {}    # key_index -> last pushed image hash
+        self._hashes = {}    # (page, key_index) -> last pushed image hash
         self._pending = {}        # key_index -> latest not-yet-rendered raw message
         self._pending_lock = threading.Lock()
 
@@ -696,9 +696,10 @@ class Plugin:
               f"device_current_page={cur} is_visible={is_visible}")
         raw = img.tobytes()
         h = hashlib.md5(raw).hexdigest()
-        if self._hashes.get(key_index) == h:
+        hash_key = (page, key_index)
+        if self._hashes.get(hash_key) == h:
             return
-        self._hashes[key_index] = h
+        self._hashes[hash_key] = h
 
         # Only write to the physical key right now if the page we're
         # rendering for is actually the one on screen. Physical keys are
@@ -722,9 +723,15 @@ class Plugin:
         # any render still in flight when a page switch landed. So it
         # survives a page switch/reload without leaking onto another page --
         # same trick dp_clock uses for its stopwatch frames.
+        #
+        # The filename itself must also include the page: two pages can
+        # (and often do) assign "pipe_text" to the same physical key index,
+        # and a filename keyed on key_index alone meant both pages wrote to
+        # the exact same dp_pipe_text_{key}.png -- whichever page rendered
+        # last silently clobbered the other's stored image on disk.
         try:
             from shared.config import CONFIG_DIR
-            img_path = os.path.join(CONFIG_DIR, f"dp_pipe_text_{key_index}.png")
+            img_path = os.path.join(CONFIG_DIR, f"dp_pipe_text_p{page}_k{key_index}.png")
             img.save(img_path)
             if dp:
                 if is_visible:
