@@ -31,6 +31,22 @@
       "description": "Text expander \u2014 bind DisplayPad buttons to multi-line snippets with {date}/{time}/{clipboard}/{cursor} placeholders",
       "author": "BaseCamp Linux",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/snippets"
+    },
+    {
+      "id": "dp_pipe_text",
+      "name": "DisplayPad Pipe Text",
+      "version": "1.1",
+      "description": "Render text from any script onto a DisplayPad key through a named pipe, with per-line colour, size and alignment",
+      "author": "FransM",
+      "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_pipe_text"
+    },
+    {
+      "id": "dp_video",
+      "name": "DisplayPad Video",
+      "version": "1.0",
+      "description": "Play a video file on a DisplayPad key, started by writing its path to a named pipe (needs opencv-python)",
+      "author": "FransM",
+      "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_video"
     }
   ]
 }

@@ -23,6 +23,15 @@ Requires `opencv-python` in addition to the bundled `Pillow`:
 pip install opencv-python
 ```
 
+Two prerequisites worth knowing before you install it:
+
+* **BaseCamp 2.1.7 or newer.** The plugin asks the app which DisplayPad page
+  is on screen and what is assigned to its keys. Older versions have no such
+  API and the plugin stays idle.
+* **A source install** (`python3 gui.py`), not the AppImage. The AppImage runs
+  its own bundled Python, which cannot see packages you install with the
+  system `pip`, so `opencv-python` will not be importable there.
+
 Restart BaseCamp Linux.
 
 ## Usage

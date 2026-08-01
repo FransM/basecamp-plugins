@@ -15,7 +15,9 @@ mkdir -p ~/.config/mountain-time-sync/plugins/dp_pipe_text
 cp plugin.json __init__.py ~/.config/mountain-time-sync/plugins/dp_pipe_text/
 ```
 
-Restart BaseCamp Linux. Requires `Pillow` (bundled with the AppImage).
+Restart BaseCamp Linux. Requires `Pillow` (bundled with the AppImage) and
+BaseCamp 2.1.7 or newer: the plugin asks the app which DisplayPad page is on
+screen and what is assigned to its keys, an API older versions do not have.
 
 ## Usage
 
