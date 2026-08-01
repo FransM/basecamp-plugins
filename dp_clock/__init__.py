@@ -131,6 +131,7 @@ class Plugin:
         ctx.register_action_type("clock_display", ctx.T("clock_display"), self.on_press)
 
     def start(self):
+        self._stop.clear()
         threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):
