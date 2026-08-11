@@ -133,12 +133,27 @@ class Plugin:
                     pass
             self._stop.wait(2)
 
-    def _scan_once(self):
+    def _current_actions(self):
+        """The 12 button actions of the page that is actually on the pad.
+
+        Not shared.config._load_displaypad_actions(): its page argument
+        defaults to 0, so a video assigned on a sub-page was never found while
+        the one on Main kept being painted, on whatever key sat at that index
+        on the visible page (issues #82 and #70)."""
+        try:
+            return self.ctx.get_displaypad_actions()
+        except Exception:
+            pass
         try:
             from shared.config import _load_displaypad_actions
-        except ImportError:
+            return _load_displaypad_actions()
+        except Exception:
+            return []
+
+    def _scan_once(self):
+        actions = self._current_actions()
+        if not actions:
             return
-        actions = _load_displaypad_actions()
 
         assigned = {}
         for i, act in enumerate(actions):
