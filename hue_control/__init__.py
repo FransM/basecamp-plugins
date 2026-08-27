@@ -77,6 +77,35 @@ def _light_rgb(state):
 
 # ── Plugin ───────────────────────────────────────────────────────────────────
 
+
+def _current_page(ctx):
+    """The page that is on the pad right now, 0 if it cannot be asked.
+
+    The frame files are named after it: two pages can put the same widget on
+    the same physical key with different settings, and a name keyed on the key
+    index alone meant both wrote to one file, so whichever rendered last
+    decided what the other page showed (#88).
+    """
+    try:
+        return int(ctx.get_displaypad_current_page())
+    except Exception:
+        return 0
+
+
+def _save_frame(img, path):
+    """Write the frame beside its destination and move it into place.
+
+    The upload worker reads these files while we write them, and a PIL save
+    straight onto the destination is not atomic: a reader that catches it half
+    written gets "cannot identify image file" (#89).
+    """
+    import os as _os
+    tmp = "%s.%d.tmp" % (path, _os.getpid())
+    # The format has to be named: PIL takes it from the file extension, and
+    # the extension here is .tmp.
+    img.save(tmp, "PNG")
+    _os.replace(tmp, path)
+
 class Plugin:
     panel_id = "hue_control"
     panel_label = "Philips Hue"
@@ -322,16 +351,34 @@ class Plugin:
 
     # ── DisplayPad rendering ─────────────────────────────────────────────────
 
+    def _current_actions(self):
+        """The 12 button actions of the page that is actually on the pad.
+
+        This plugin was left out of the #82 round. Asking without a page
+        answers with Main, so a Hue key on a sub-page was never found while
+        Main's key kept being painted, onto whatever sat at that index on the
+        page actually being looked at.
+        """
+        try:
+            return self.ctx.get_displaypad_actions()
+        except Exception:
+            pass
+        try:
+            from shared.config import _load_displaypad_actions
+            return _load_displaypad_actions()
+        except Exception:
+            return []
+
     def _update_displaypad(self):
         """Render Hue button images, save to disk, and register with DisplayPad.
         Only pushes when the image content actually changed (avoids USB conflicts).
         """
         import os, hashlib
         try:
-            from shared.config import _load_displaypad_actions, CONFIG_DIR
+            from shared.config import CONFIG_DIR
         except ImportError:
             return
-        actions = _load_displaypad_actions()
+        actions = self._current_actions()
         dp = self.ctx.get_displaypad()
         for i, act in enumerate(actions):
             atype, aval = act.get("type", ""), act.get("action", "")
@@ -356,14 +403,15 @@ class Plugin:
             self._dp_hashes[i] = h
 
             # Save rendered image to disk so DisplayPad's normal upload uses it
-            img_path = os.path.join(CONFIG_DIR, f"dp_hue_{i}.png")
-            img.save(img_path)
+            page = _current_page(self.ctx)
+            img_path = os.path.join(CONFIG_DIR, f"dp_hue_p{page}_k{i}.png")
+            _save_frame(img, img_path)
 
             # Register in DisplayPad's _images dict so full uploads include it
             if dp:
                 dp._images[str(i)] = img_path
-                if hasattr(dp, "_page_images") and 0 in dp._page_images:
-                    dp._page_images[0][str(i)] = img_path
+                if hasattr(dp, "_page_images"):
+                    dp._page_images.setdefault(page, {})[str(i)] = img_path
 
             # Push to device
             self.ctx.push_displaypad_image(i, img)

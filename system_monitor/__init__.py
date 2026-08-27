@@ -238,6 +238,35 @@ def _parse_cycle_opts(val, default_interval=5):
     return interval, unit
 
 
+
+def _current_page(ctx):
+    """The page that is on the pad right now, 0 if it cannot be asked.
+
+    The frame files are named after it: two pages can put the same widget on
+    the same physical key with different settings, and a name keyed on the key
+    index alone meant both wrote to one file, so whichever rendered last
+    decided what the other page showed (#88).
+    """
+    try:
+        return int(ctx.get_displaypad_current_page())
+    except Exception:
+        return 0
+
+
+def _save_frame(img, path):
+    """Write the frame beside its destination and move it into place.
+
+    The upload worker reads these files while we write them, and a PIL save
+    straight onto the destination is not atomic: a reader that catches it half
+    written gets "cannot identify image file" (#89).
+    """
+    import os as _os
+    tmp = "%s.%d.tmp" % (path, _os.getpid())
+    # The format has to be named: PIL takes it from the file extension, and
+    # the extension here is .tmp.
+    img.save(tmp, "PNG")
+    _os.replace(tmp, path)
+
 class Plugin:
     panel_id = "system_monitor"
     panel_label = "System Monitor"
@@ -402,11 +431,12 @@ class Plugin:
             self._hashes[i] = h
 
             # Save to disk so DisplayPad upload worker includes it
-            img_path = os.path.join(CONFIG_DIR, f"dp_mon_{i}.png")
-            img.save(img_path)
+            page = _current_page(self.ctx)
+            img_path = os.path.join(CONFIG_DIR, f"dp_mon_p{page}_k{i}.png")
+            _save_frame(img, img_path)
             if dp:
                 dp._images[str(i)] = img_path
-                if hasattr(dp, "_page_images") and 0 in dp._page_images:
-                    dp._page_images[0][str(i)] = img_path
+                if hasattr(dp, "_page_images"):
+                    dp._page_images.setdefault(page, {})[str(i)] = img_path
 
             self.ctx.push_displaypad_image(i, img)

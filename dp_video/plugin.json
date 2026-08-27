@@ -1,7 +1,7 @@
 {
   "id": "dp_video",
   "name": "DisplayPad Video",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "FransM",
   "description": "Plays a video file on a DisplayPad key. Assign the 'Video' action type to a key and enter a pipe path in the action field; write a video file path to that pipe to start playback.",
   "type": ["service", "action"],

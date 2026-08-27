@@ -391,6 +391,21 @@ def _render_spec(spec):
     return img
 
 
+
+def _save_frame(img, path):
+    """Write the frame beside its destination and move it into place.
+
+    The upload worker reads these files while we write them, and a PIL save
+    straight onto the destination is not atomic: a reader that catches it half
+    written gets "cannot identify image file" (#89).
+    """
+    import os as _os
+    tmp = "%s.%d.tmp" % (path, _os.getpid())
+    # The format has to be named: PIL takes it from the file extension, and
+    # the extension here is .tmp.
+    img.save(tmp, "PNG")
+    _os.replace(tmp, path)
+
 class Plugin:
     def __init__(self, ctx):
         self.ctx = ctx
@@ -732,7 +747,7 @@ class Plugin:
         try:
             from shared.config import CONFIG_DIR
             img_path = os.path.join(CONFIG_DIR, f"dp_pipe_text_p{page}_k{key_index}.png")
-            img.save(img_path)
+            _save_frame(img, img_path)
             if dp:
                 if is_visible:
                     dp._images[str(key_index)] = img_path
