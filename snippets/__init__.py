@@ -126,42 +126,59 @@ def _render_snippet(slot, label, preview):
     first_line = next((l for l in preview.splitlines() if l.strip()), "")
     title = label.strip() or first_line.strip()
 
+    big, small = _font(13), _font(10)
     y = 20
-    for line in _wrap(draw, title, _font(13), 3 if label.strip() else 5):
-        draw.text((5, y), line, fill=(230, 230, 240), font=_font(13))
+    for line in _wrap(draw, title, big, 3 if label.strip() else 5):
+        draw.text((5, y), line, fill=(230, 230, 240), font=big)
         y += 15
 
     if label.strip():
         y += 4
-        for line in _wrap(draw, " ".join(preview.split()), _font(10), 3):
-            if y > _TILE - 12:
-                break
-            draw.text((5, y), line, fill=(120, 120, 150), font=_font(10))
+        # However many lines are left below the name, so the wrap can put its
+        # dot on the last one that gets drawn.
+        room = max(0, (_TILE - 2 - y) // 12)
+        for line in _wrap(draw, " ".join(preview.split()), small, room):
+            draw.text((5, y), line, fill=(120, 120, 150), font=small)
             y += 12
     return img
 
 
 def _wrap(draw, text, font, max_lines):
-    """Break text into lines that fit the key. What did not fit ends in a dot."""
-    lines, line, dropped = [], "", False
-    for word in text.split():
-        candidate = ("%s %s" % (line, word)).strip()
-        box = draw.textbbox((0, 0), candidate, font=font)
-        if box[2] - box[0] > _TILE - 10 and line:
-            lines.append(line)
-            line = word
-            if len(lines) == max_lines:
-                # This word and everything after it has nowhere to go.
-                dropped = True
-                break
-        else:
+    """Break text into lines that fit the key. What did not fit ends in a dot.
+
+    `max_lines` is how many lines the caller will actually draw, so the dot
+    lands on the last line anyone sees rather than on one that is cut off
+    afterwards.
+    """
+    def width(s):
+        box = draw.textbbox((0, 0), s, font=font)
+        return box[2] - box[0]
+
+    limit = _TILE - 10
+    lines, line, words = [], "", text.split()
+    while words and len(lines) < max_lines:
+        candidate = ("%s %s" % (line, words[0])).strip()
+        if width(candidate) <= limit:
             line = candidate
+            words.pop(0)
+        elif line:
+            lines.append(line)
+            line = ""
+        else:
+            # One word wider than a whole line: cut it where it stops fitting
+            # and carry the rest. Without this it was drawn straight over the
+            # edge of the key, with no dot to say so.
+            cut = len(words[0])
+            while cut > 1 and width(words[0][:cut]) > limit:
+                cut -= 1
+            lines.append(words[0][:cut])
+            words[0] = words[0][cut:]
     if line and len(lines) < max_lines:
         lines.append(line)
-    elif line:
-        dropped = True
-    if dropped and lines:
-        lines[-1] = lines[-1][:-1] + "\u2026" if len(lines[-1]) > 1 else "\u2026"
+        line = ""
+    if (line or words) and lines:
+        lines[-1] = (lines[-1][:-1] + "\u2026" if len(lines[-1]) > 1
+                     else "\u2026")
     return lines
 
 
