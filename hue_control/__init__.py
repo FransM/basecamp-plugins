@@ -52,7 +52,8 @@ def _hue_error(result):
             if isinstance(item, dict) and "error" in item:
                 err = item["error"]
                 if isinstance(err, dict):
-                    return err.get("description") or str(err)
+                    return (err.get("description")
+                            or "bridge error %s" % err.get("type", "?"))
                 return str(err)
     return None
 
@@ -315,21 +316,29 @@ class Plugin:
                 self._lights = lights
                 self._connected = True
                 self._last_error = ""
+                if isinstance(groups, dict):
+                    # Entertainment groups are set up by the sync software and
+                    # do not appear in the Hue app, so a second group holding
+                    # the same lights showed up here with no way to tell what
+                    # it was or where it came from (#16).
+                    self._groups = {
+                        k: v for k, v in groups.items()
+                        if isinstance(v, dict)
+                        and v.get("type") != "Entertainment"}
             else:
                 self._connected = False
-                # Why, so the screen can say more than "not connected": a
-                # key the bridge has forgotten and a bridge that is switched
-                # off used to look exactly the same from here (#16).
+                # Why, so the screen can say more than "not connected": a key
+                # the bridge has forgotten and a bridge that is switched off
+                # used to look exactly the same from here (#16).
                 self._last_error = (_hue_error(lights)
                                     or f"no answer from {self._bridge_ip}")
-                return
-            if isinstance(groups, dict):
-                # Entertainment groups are set up by the sync software and do
-                # not appear in the Hue app, so a second group holding the
-                # same lights showed up here with no way to tell what it was
-                # or where it came from (#16).
-                self._groups = {k: v for k, v in groups.items()
-                                if v.get("type") != "Entertainment"}
+        if not self._connected:
+            # Out through the same door as a good fetch. The status line and
+            # the window are only ever refreshed from there, so returning
+            # straight from the branch above is what kept the reason off the
+            # screen it was gathered for.
+            self.ctx.schedule(0, self._on_fetched)
+            return
         if include_scenes:
             scenes = _hue("GET", self._bridge_ip, self._api_key, "scenes")
             if isinstance(scenes, dict):
@@ -652,6 +661,7 @@ class HueWindow(ctk.CTkToplevel):
         self._light_rows.clear()
 
         p = self.p
+        self._built_connected = p._connected
         if not p._connected:
             why = getattr(p, "_last_error", "")
             ctk.CTkLabel(self._scroll,
@@ -795,9 +805,15 @@ class HueWindow(ctk.CTkToplevel):
         """Called from plugin._on_fetched on GUI thread."""
         p = self.p
 
-        # Structure changed? Full rebuild.
-        if (set(self._group_rows) != set(p._groups) or
-                set(self._light_rows) != set(p._lights)):
+        # Structure changed? Full rebuild. So does a change of connection, and
+        # so does staying disconnected: the reason and the retry button are
+        # built by _build_all, and while that view is up both row sets are
+        # empty and match a bridge that has answered nothing, so comparing
+        # them alone never noticed and Try again changed nothing (#16).
+        if (not p._connected
+                or getattr(self, "_built_connected", None) != p._connected
+                or set(self._group_rows) != set(p._groups)
+                or set(self._light_rows) != set(p._lights)):
             self._build_all()
             return
 
@@ -909,9 +925,9 @@ class HueWindow(ctk.CTkToplevel):
         reading OFF.
         """
         label, colour = ("ON", GRN) if on else ("OFF", FG2)
+        hover = "#16a34a" if on else BORDER
         for w in list(self._group_rows.values()) + list(self._light_rows.values()):
-            w["btn"].configure(text=label, fg_color=colour,
-                               hover_color=BORDER)
+            w["btn"].configure(text=label, fg_color=colour, hover_color=hover)
             w["dot"].configure(text_color=colour if on else "#282828")
             w["on"] = on
         p = self.p

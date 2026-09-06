@@ -103,6 +103,69 @@ check("a refusal with no description still says something",
 check("a list that holds no error is not a refusal",
       hue._hue_error([{"success": {"/lights/1/state/on": True}}]) is None)
 
+check("a refusal is described in words, not as a dict dump",
+      "{" not in hue._hue_error([{"error": {"type": 3}}]),
+      hue._hue_error([{"error": {"type": 3}}]))
+
+
+# The fetch has to come out through the one door that refreshes the screen,
+# and it has to keep the groups on the way. Both were mine to get wrong: the
+# reason is gathered in the branch that used to return on the spot, and the
+# group assignment sat behind that return where nothing reached it.
+class FetchCtx:
+    def __init__(self):
+        self.scheduled = 0
+
+    def schedule(self, _ms, callback):
+        self.scheduled += 1
+
+    def __getattr__(self, _name):
+        return lambda *a, **kw: None
+
+
+def fetch_with(answers):
+    """Run _fetch against a bridge that answers like this."""
+    import threading as _t
+    plug = hue.Plugin.__new__(hue.Plugin)
+    plug.ctx = FetchCtx()
+    plug._lock = _t.RLock()
+    plug._bridge_ip, plug._api_key = "10.0.0.2", "key"
+    plug._lights, plug._groups, plug._scenes = {}, {}, {}
+    plug._connected, plug._last_error = False, ""
+    real = hue._hue
+    hue._hue = lambda method, ip, key, path, data=None: answers.get(path)
+    try:
+        plug._fetch()
+    finally:
+        hue._hue = real
+    return plug
+
+
+good = fetch_with({
+    "lights": {"1": {"name": "Desk"}},
+    "groups": {"1": {"name": "Woonkamer", "type": "Room"},
+               "2": {"name": "Entertainmentruimte1", "type": "Entertainment"}},
+})
+check("a good fetch keeps the groups", list(good._groups) == ["1"], good._groups)
+check("and leaves the entertainment group out",
+      "2" not in good._groups, good._groups)
+check("and refreshes the screen once", good.ctx.scheduled == 1,
+      good.ctx.scheduled)
+
+refused = fetch_with({
+    "lights": [{"error": {"type": 1, "description": "unauthorized user"}}],
+    "groups": None,
+})
+check("a refused fetch is not connected", refused._connected is False)
+check("and carries the bridge's own words",
+      refused._last_error == "unauthorized user", refused._last_error)
+check("and still refreshes the screen, or nobody sees the reason",
+      refused.ctx.scheduled == 1, refused.ctx.scheduled)
+
+silent = fetch_with({"lights": None, "groups": None})
+check("a bridge that says nothing says so by address",
+      "10.0.0.2" in silent._last_error, silent._last_error)
+
 print()
 if failures:
     print("%d check(s) failed:" % len(failures))

@@ -89,17 +89,25 @@ def _keys_back_to(text, idx):
     return ["home"] + ["up"] * lines_up + ["home"] + ["right"] * column
 
 
+_FONTS = {}
+
+
 def _font(size):
-    for path in ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                 "/usr/share/fonts/TTF/DejaVuSans.ttf",
-                 "/usr/share/fonts/dejavu/DejaVuSans.ttf"):
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
+    """A face at this size, loaded once. Kept because the drawing below asks
+    for one per line and a truetype load is a file read every time."""
+    if size not in _FONTS:
+        _FONTS[size] = ImageFont.load_default()
+        for path in ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+                     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                     "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                     "/usr/share/fonts/dejavu/DejaVuSans.ttf"):
+            if os.path.exists(path):
+                try:
+                    _FONTS[size] = ImageFont.truetype(path, size)
+                except Exception:
+                    pass
                 break
-    return ImageFont.load_default()
+    return _FONTS[size]
 
 
 def _render_snippet(slot, label, preview):
@@ -134,22 +142,26 @@ def _render_snippet(slot, label, preview):
 
 
 def _wrap(draw, text, font, max_lines):
-    """Break text into lines that fit the key, longest first, cut with a dot."""
-    words, lines, line = text.split(), [], ""
-    for word in words:
+    """Break text into lines that fit the key. What did not fit ends in a dot."""
+    lines, line, dropped = [], "", False
+    for word in text.split():
         candidate = ("%s %s" % (line, word)).strip()
         box = draw.textbbox((0, 0), candidate, font=font)
         if box[2] - box[0] > _TILE - 10 and line:
             lines.append(line)
             line = word
             if len(lines) == max_lines:
+                # This word and everything after it has nowhere to go.
+                dropped = True
                 break
         else:
             line = candidate
     if line and len(lines) < max_lines:
         lines.append(line)
-    if len(lines) == max_lines and len(" ".join(lines)) < len(text):
-        lines[-1] = lines[-1][:max(0, len(lines[-1]) - 1)] + "\u2026"
+    elif line:
+        dropped = True
+    if dropped and lines:
+        lines[-1] = lines[-1][:-1] + "\u2026" if len(lines[-1]) > 1 else "\u2026"
     return lines
 
 
@@ -276,23 +288,33 @@ class Plugin:
         held before and the editor showed the plugin placeholder, so a page of
         snippets was a page of keys you had to remember (#15). Started and
         stopped with the page, the way the other widget plugins are.
+
+        Each thread carries its own stop, so a stopped one can never be
+        revived: clearing one shared event would let a predecessor that had
+        not reached its next check yet carry on beside the new thread, and
+        two of them painting the same keys is two of everything. Editing a
+        key now brings the services in line straight away, so a stop followed
+        closely by a start is an ordinary thing rather than a rarity.
         """
-        self._stop.clear()
+        self._stop.set()                # any predecessor ends here
+        stop = threading.Event()
+        self._stop = stop
         self._drawn.clear()
-        threading.Thread(target=self._draw_loop, daemon=True).start()
+        threading.Thread(target=self._draw_loop, args=(stop,),
+                         daemon=True).start()
 
     def stop(self):
         self._stop.set()
 
-    def _draw_loop(self):
-        while not self._stop.is_set():
+    def _draw_loop(self, stop):
+        while not stop.is_set():
             try:
                 self._draw_keys()
             except Exception as e:
                 # A transient failure must never end this thread, or the keys
                 # stay as they are until the plugin is disabled and enabled.
                 print(f"[snippets] draw error (continuing): {e}", flush=True)
-            self._stop.wait(2)
+            stop.wait(2)
 
     def _current_actions(self):
         """The 12 actions of the page on the pad, not of the main page (#82)."""
