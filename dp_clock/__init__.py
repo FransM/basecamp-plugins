@@ -160,14 +160,25 @@ class Plugin:
         ctx.register_action_type("clock_display", ctx.T("clock_display"), self.on_press)
 
     def start(self):
-        self._stop.clear()
-        threading.Thread(target=self._loop, daemon=True).start()
+        """Begin the clock.
+
+        Each thread carries its own stop, so a stopped one can never be
+        revived alongside its successor: clearing one shared event let a
+        predecessor that had not reached its next check carry on beside the
+        new thread. A key edit brings the page's services in line straight
+        away now, so a stop closely followed by a start is ordinary rather
+        than rare.
+        """
+        self._stop.set()                # any predecessor ends here
+        stop = threading.Event()
+        self._stop = stop
+        threading.Thread(target=self._loop, args=(stop,), daemon=True).start()
 
     def stop(self):
         self._stop.set()
 
-    def _loop(self):
-        while not self._stop.is_set():
+    def _loop(self, stop):
+        while not stop.is_set():
             try:
                 if self._timer_state == "running":
                     self._elapsed = time.time() - self._start_time
@@ -182,7 +193,7 @@ class Plugin:
                 except Exception:
                     pass
             # While the stopwatch runs we redraw fast; otherwise once per second.
-            self._stop.wait(0.1 if self._timer_state != "off" else 1)
+            stop.wait(0.1 if self._timer_state != "off" else 1)
 
     def on_press(self, action_value):
         if self._timer_state != "running":

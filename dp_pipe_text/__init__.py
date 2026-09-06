@@ -428,8 +428,14 @@ class Plugin:
     def start(self):
         page = self.ctx.get_displaypad_current_page()
         _dbg(f"[DBG dp_pipe_text] start() called, current_page={page}")
-        self._stop.clear()
-        threading.Thread(target=self._scan_loop, daemon=True).start()
+        # Each thread carries its own stop, so a stopped one can never be
+        # revived alongside its successor. The reader threads are told
+        # individually by stop(), so they are not affected by this.
+        self._stop.set()
+        stop = threading.Event()
+        self._stop = stop
+        threading.Thread(target=self._scan_loop, args=(stop,),
+                         daemon=True).start()
 
     def stop(self):
         _dbg(f"[DBG dp_pipe_text] stop() called, tearing down readers={list(self._readers.keys())}")
@@ -452,8 +458,8 @@ class Plugin:
     # type, and keeps one reader thread per key in sync with the pipe path
     # the user typed into that key's action field.
 
-    def _scan_loop(self):
-        while not self._stop.is_set():
+    def _scan_loop(self, stop):
+        while not stop.is_set():
             try:
                 self._scan_once()
             except Exception as e:
@@ -463,7 +469,7 @@ class Plugin:
                     print(f"[dp_pipe_text] scan error (continuing): {e}", flush=True)
                 except Exception:
                     pass
-            self._stop.wait(2)
+            stop.wait(2)
 
     def _scan_once(self):
         try:

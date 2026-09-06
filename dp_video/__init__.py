@@ -134,7 +134,19 @@ class Plugin:
                   flush=True)
 
     def start(self):
-        threading.Thread(target=self._scan_loop, daemon=True).start()
+        """Begin watching for keys assigned this action.
+
+        The stop was never cleared here, so once a page switch had stopped
+        this plugin the scan thread returned at once and it stayed dead for
+        the rest of the session. Each thread carries its own stop now; the
+        reader and player threads are told individually by stop(), so they
+        are not affected by the change.
+        """
+        self._stop.set()                # any predecessor ends here
+        stop = threading.Event()
+        self._stop = stop
+        threading.Thread(target=self._scan_loop, args=(stop,),
+                         daemon=True).start()
 
     def stop(self):
         self._stop.set()
@@ -149,8 +161,8 @@ class Plugin:
     # type, and keeps one pipe-reader thread per key in sync with the pipe
     # path the user typed into that key's action field.
 
-    def _scan_loop(self):
-        while not self._stop.is_set():
+    def _scan_loop(self, stop):
+        while not stop.is_set():
             try:
                 self._scan_once()
             except Exception as e:
@@ -160,7 +172,7 @@ class Plugin:
                     print(f"[dp_video] scan error (continuing): {e}", flush=True)
                 except Exception:
                     pass
-            self._stop.wait(2)
+            stop.wait(2)
 
     def _current_actions(self):
         """The 12 button actions of the page that is actually on the pad.

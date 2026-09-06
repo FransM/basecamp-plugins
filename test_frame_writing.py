@@ -226,6 +226,50 @@ class NoPage:
 check("and falls back to Main when it cannot be asked",
       module._current_page(NoPage()) == 0)
 
+# ── A service has to survive being stopped and started again ─────────────────
+# The application brings a page's services in line whenever a key changes, not
+# only on a page switch, so stop-then-start is ordinary. A start() that does
+# not reset its stop leaves the plugin dead for the rest of the session, and
+# one that clears a shared event lets the outgoing thread carry on beside its
+# successor. Both were really there: dp_video never reset its stop at all.
+import threading as _threading   # noqa: E402
+
+for plugin in ("dp_clock", "system_monitor", "hue_control", "dp_video",
+               "dp_pipe_text", "snippets"):
+    module = load(plugin)
+    pad = FakePad()
+    actions = [{"type": "none", "action": ""} for _ in range(12)]
+    plug = module.Plugin(FakeCtx(pad, actions, 0))
+    if plugin == "hue_control":
+        plug._bridge_ip, plug._api_key = "127.0.0.1", "x"   # else it starts nothing
+
+    threads = []
+    real_thread = module.threading.Thread
+
+    def spy(*a, **kw):
+        t = real_thread(*a, **kw)
+        t.start = lambda: threads.append(kw.get("args", ()))
+        return t
+
+    module.threading.Thread = spy
+    try:
+        plug.start()
+        first = plug._stop
+        plug.stop()
+        plug.start()
+    finally:
+        module.threading.Thread = real_thread
+
+    check("%s is startable again after a stop" % plugin,
+          not plug._stop.is_set(), "stop still set")
+    check("%s does not revive the thread it stopped" % plugin,
+          first.is_set(), "the outgoing thread's stop was cleared")
+    check("%s hands each thread its own stop" % plugin,
+          len(threads) == 2
+          and threads[0][0] is not threads[1][0]
+          and threads[1][0] is plug._stop,
+          threads)
+
 shutil.rmtree(_TMP_HOME, ignore_errors=True)
 
 print()

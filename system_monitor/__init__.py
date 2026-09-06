@@ -316,18 +316,22 @@ class Plugin:
         if not psutil:
             print("[system_monitor] psutil not installed, plugin disabled")
             return
-        self._stop.clear()
-        threading.Thread(target=self._loop, daemon=True).start()
+        # Each thread carries its own stop, so a stopped one can never be
+        # revived alongside its successor (see the other widget plugins).
+        self._stop.set()
+        stop = threading.Event()
+        self._stop = stop
+        threading.Thread(target=self._loop, args=(stop,), daemon=True).start()
 
     def stop(self):
         self._stop.set()
 
-    def _loop(self):
+    def _loop(self, stop):
         # Prime CPU percent (first call always returns 0)
         psutil.cpu_percent(interval=0.5)
-        while not self._stop.is_set():
+        while not stop.is_set():
             self._update()
-            self._stop.wait(2)
+            stop.wait(2)
 
     def _current_actions(self):
         """The 12 button actions of the page that is actually on the pad.

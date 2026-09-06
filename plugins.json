@@ -11,7 +11,7 @@
     {
       "id": "system_monitor",
       "name": "System Monitor",
-      "version": "1.3.2",
+      "version": "1.3.3",
       "description": "Live CPU, RAM, GPU/CPU temperature and disk usage on DisplayPad buttons",
       "author": "BaseCamp Linux",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/system_monitor"
@@ -19,7 +19,7 @@
     {
       "id": "dp_clock",
       "name": "DisplayPad Clock",
-      "version": "1.2.3",
+      "version": "1.2.4",
       "description": "Live clock on DisplayPad buttons \u2014 seconds, AM/PM, date, plus a built-in stopwatch",
       "author": "FransM",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_clock"
@@ -35,7 +35,7 @@
     {
       "id": "dp_pipe_text",
       "name": "DisplayPad Pipe Text",
-      "version": "1.2",
+      "version": "1.2.1",
       "description": "Render text from any script onto a DisplayPad key through a named pipe, with per-line colour, size and alignment",
       "author": "FransM",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_pipe_text"
@@ -43,7 +43,7 @@
     {
       "id": "dp_video",
       "name": "DisplayPad Video",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "description": "Play a video file on a DisplayPad key, started by writing its path to a named pipe (needs opencv-python)",
       "author": "FransM",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/dp_video"

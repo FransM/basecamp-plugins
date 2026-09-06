@@ -1,7 +1,7 @@
 {
   "id": "dp_clock",
   "name": "DisplayPad Clock",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "author": "FransM",
   "type": ["service", "action"],
   "description": "Live clock on DisplayPad buttons — seconds, AM/PM, date, plus a built-in stopwatch"
