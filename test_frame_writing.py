@@ -113,7 +113,17 @@ WIDGETS = (
     ("dp_clock", "clock_display", "", "dp_clock"),
     ("system_monitor", "mon_cpu", "", "dp_mon"),
     ("hue_control", "hue_toggle", "light:1", "dp_hue"),
+    ("snippets", "snippet", "1", "dp_snippet"),
 )
+
+
+def render_once(plugin, plug):
+    """Ask a plugin to paint its keys, whatever it calls that."""
+    for name in ("_update", "_update_displaypad", "_draw_keys"):
+        method = getattr(plug, name, None)
+        if method is not None:
+            return method()
+    raise AttributeError("%s has no way to render a key" % plugin)
 
 # ── The same widget on the same key of two pages ─────────────────────────────
 for plugin, action_type, action_value, prefix in WIDGETS:
@@ -129,8 +139,11 @@ for plugin, action_type, action_value, prefix in WIDGETS:
             # It renders nothing for a light it has never heard of, and it
             # only hears about lights from a bridge.
             plug._lights = {"1": {"name": "Desk", "state": {"on": True}}}
+        if plugin == "snippets":
+            # Same for a slot that holds nothing.
+            plug._snippets = [{"label": "Greeting", "text": "kind regards,\nFrans"}]
         try:
-            plug._update() if hasattr(plug, "_update") else plug._update_displaypad()
+            render_once(plugin, plug)
         except Exception as exc:
             check("%s renders a frame" % plugin, False, repr(exc))
             break
@@ -153,7 +166,7 @@ for plugin, action_type, action_value, prefix in WIDGETS:
 import re   # noqa: E402
 
 for plugin in ("dp_clock", "system_monitor", "hue_control", "dp_video",
-               "dp_pipe_text"):
+               "dp_pipe_text", "snippets"):
     text = open(os.path.join(HERE, plugin, "__init__.py"), encoding="utf-8").read()
     names = re.findall(r'f"(dp_[a-z_]*?_(?:p\{page\}_k)?\{[a-z_]+\}\.png)"', text)
     pageless = [n for n in names if "_p{page}_k" not in n]

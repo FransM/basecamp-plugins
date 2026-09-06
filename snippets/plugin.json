@@ -1,8 +1,8 @@
 {
   "id": "snippets",
   "name": "Snippets",
-  "version": "1.0",
+  "version": "1.1",
   "author": "BaseCamp Linux",
-  "type": ["panel", "action"],
+  "type": ["panel", "service", "action"],
   "description": "Text expander — bind DisplayPad buttons to multi-line snippets with {date}/{time}/{clipboard}/{cursor} placeholders"
 }

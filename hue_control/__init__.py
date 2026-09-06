@@ -20,7 +20,13 @@ _PURPLE = "#a855f7"
 # ── Hue Bridge HTTP ─────────────────────────────────────────────────────────
 
 def _hue(method, bridge_ip, api_key, path, data=None):
-    """Single HTTP helper for all Hue Bridge calls."""
+    """Single HTTP helper for all Hue Bridge calls.
+
+    Returns whatever the bridge answered, or None if it did not answer at
+    all. A V1 bridge says no with HTTP 200 and a list of error objects, so a
+    refusal is a perfectly good answer and reaches the caller as one; use
+    _hue_error() to read it (#16).
+    """
     try:
         url = f"http://{bridge_ip}/api/{api_key}/{path}" if api_key else f"http://{bridge_ip}/api"
         body = json.dumps(data).encode() if data else None
@@ -30,6 +36,25 @@ def _hue(method, bridge_ip, api_key, path, data=None):
             return json.loads(resp.read())
     except Exception:
         return None
+
+
+def _hue_error(result):
+    """What the bridge refused with, as text, or None if it did not refuse.
+
+    The V1 API answers `[{"error": {"type": 1, "description": "unauthorized
+    user"}}]` for a key it does not know, with a 200 beside it. Every caller
+    here only checked whether it had a dict, so a stored key that the bridge
+    had forgotten was indistinguishable from a bridge that was switched off,
+    and both came out as a bare "Not connected" (#16).
+    """
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and "error" in item:
+                err = item["error"]
+                if isinstance(err, dict):
+                    return err.get("description") or str(err)
+                return str(err)
+    return None
 
 
 def _xy_to_rgb(x, y, bri=254):
@@ -123,6 +148,7 @@ class Plugin:
         self._groups = {}
         self._scenes = {}
         self._connected = False
+        self._last_error = ""   # why not, for the status line (#16)
         self._win = None  # HueWindow instance
 
         ctx.register_translations({
@@ -142,7 +168,9 @@ class Plugin:
                 "hue_scenes":      "Scenes",
                 "hue_on":          "ON",
                 "hue_off":         "OFF",
+                "hue_all_on":      "All On",
                 "hue_all_off":     "All Off",
+                "hue_retry":       "Try again",
                 "hue_toggle":      "Hue: Toggle Light",
                 "hue_scene":       "Hue: Activate Scene",
                 "hue_bri":         "Hue: Brightness",
@@ -163,7 +191,9 @@ class Plugin:
                 "hue_scenes":      "Szenen",
                 "hue_on":          "AN",
                 "hue_off":         "AUS",
+                "hue_all_on":      "Alles an",
                 "hue_all_off":     "Alles aus",
+                "hue_retry":       "Erneut versuchen",
                 "hue_toggle":      "Hue: Licht umschalten",
                 "hue_scene":       "Hue: Szene aktivieren",
                 "hue_bri":         "Hue: Helligkeit",
@@ -226,8 +256,11 @@ class Plugin:
             self._panel_status.configure(
                 text=f"\u2022 {self.ctx.T('hue_connected')}  ({n} lights)", text_color=GRN)
         else:
-            self._panel_status.configure(
-                text=f"\u2022 {self.ctx.T('hue_disconnected')}", text_color=RED)
+            why = getattr(self, "_last_error", "")
+            text = f"\u2022 {self.ctx.T('hue_disconnected')}"
+            if why:
+                text += f": {why}"
+            self._panel_status.configure(text=text, text_color=RED)
 
     # ── Hue Control Window ───────────────────────────────────────────────────
 
@@ -281,11 +314,22 @@ class Plugin:
             if isinstance(lights, dict):
                 self._lights = lights
                 self._connected = True
+                self._last_error = ""
             else:
                 self._connected = False
+                # Why, so the screen can say more than "not connected": a
+                # key the bridge has forgotten and a bridge that is switched
+                # off used to look exactly the same from here (#16).
+                self._last_error = (_hue_error(lights)
+                                    or f"no answer from {self._bridge_ip}")
                 return
             if isinstance(groups, dict):
-                self._groups = groups
+                # Entertainment groups are set up by the sync software and do
+                # not appear in the Hue app, so a second group holding the
+                # same lights showed up here with no way to tell what it was
+                # or where it came from (#16).
+                self._groups = {k: v for k, v in groups.items()
+                                if v.get("type") != "Entertainment"}
         if include_scenes:
             scenes = _hue("GET", self._bridge_ip, self._api_key, "scenes")
             if isinstance(scenes, dict):
@@ -580,14 +624,23 @@ class HueWindow(ctk.CTkToplevel):
             return _orig_yview(*args)
         _c.yview = _capped_yview
 
-        # All Off
+        # All On / All Off. Only off was offered, which is half a switch (#16).
+        row_all = ctk.CTkFrame(self, fg_color="transparent")
+        row_all.pack(padx=12, pady=(4, 10), anchor="w")
         ctk.CTkButton(
-            self, text=plugin.ctx.T("hue_all_off"),
+            row_all, text=plugin.ctx.T("hue_all_on"),
+            font=("Helvetica", 11, "bold"),
+            fg_color=GRN, hover_color="#15803d", text_color=FG,
+            height=32, width=120, corner_radius=4,
+            command=lambda: self._all(True)
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            row_all, text=plugin.ctx.T("hue_all_off"),
             font=("Helvetica", 11, "bold"),
             fg_color=RED, hover_color="#b91c1c", text_color=FG,
             height=32, width=120, corner_radius=4,
-            command=self._all_off
-        ).pack(padx=12, pady=(4, 10), anchor="w")
+            command=lambda: self._all(False)
+        ).pack(side="left")
 
         self._build_all()
 
@@ -600,8 +653,16 @@ class HueWindow(ctk.CTkToplevel):
 
         p = self.p
         if not p._connected:
-            ctk.CTkLabel(self._scroll, text=p.ctx.T("hue_no_bridge"),
-                         font=("Helvetica", 11), text_color=FG2).pack(pady=30)
+            why = getattr(p, "_last_error", "")
+            ctk.CTkLabel(self._scroll,
+                         text=why or p.ctx.T("hue_no_bridge"),
+                         font=("Helvetica", 11), text_color=FG2).pack(pady=(30, 6))
+            # A window that only says "not connected" leaves nothing to do
+            # but close it and guess (#16). The bridge's own reason is above,
+            # and this tries again without a trip back to the settings.
+            ctk.CTkButton(self._scroll, text=p.ctx.T("hue_retry"),
+                          font=("Helvetica", 11), height=30, width=140,
+                          corner_radius=4, command=self._retry).pack(pady=(0, 20))
             self._status.configure(text=p.ctx.T("hue_disconnected"), text_color=RED)
             return
 
@@ -834,17 +895,29 @@ class HueWindow(ctk.CTkToplevel):
                                               f"groups/{gid}/action", {"scene": sid}),
                          daemon=True).start()
 
-    def _all_off(self):
-        # Optimistic UI
-        for w in self._group_rows.values():
-            w["btn"].configure(text="OFF", fg_color=FG2, hover_color=BORDER)
-            w["dot"].configure(text_color="#282828")
-            w["on"] = False
-        for w in self._light_rows.values():
-            w["btn"].configure(text="OFF", fg_color=FG2, hover_color=BORDER)
-            w["dot"].configure(text_color="#282828")
-            w["on"] = False
+    def _retry(self):
+        """Ask the bridge again, from the window that said it did not answer."""
         p = self.p
-        threading.Thread(target=lambda: _hue("PUT", p._bridge_ip, p._api_key,
-                                              "groups/0/action", {"on": False}),
+        threading.Thread(target=lambda: p._fetch(include_scenes=True),
                          daemon=True).start()
+
+    def _all(self, on):
+        """Every light at once. Shown straight away, then confirmed.
+
+        The screen used to be set and left that way whatever the bridge did
+        with the request, so a command that never arrived left every row
+        reading OFF.
+        """
+        label, colour = ("ON", GRN) if on else ("OFF", FG2)
+        for w in list(self._group_rows.values()) + list(self._light_rows.values()):
+            w["btn"].configure(text=label, fg_color=colour,
+                               hover_color=BORDER)
+            w["dot"].configure(text_color=colour if on else "#282828")
+            w["on"] = on
+        p = self.p
+
+        def send():
+            _hue("PUT", p._bridge_ip, p._api_key, "groups/0/action", {"on": on})
+            p._fetch()      # whatever really happened is what the rows show
+
+        threading.Thread(target=send, daemon=True).start()

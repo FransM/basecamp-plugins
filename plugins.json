@@ -3,7 +3,7 @@
     {
       "id": "hue_control",
       "name": "Philips Hue",
-      "version": "1.1",
+      "version": "1.2",
       "description": "Control your Philips Hue lights from DisplayPad buttons",
       "author": "BaseCamp Linux",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/hue_control"
@@ -27,7 +27,7 @@
     {
       "id": "snippets",
       "name": "Snippets",
-      "version": "1.0",
+      "version": "1.1",
       "description": "Text expander \u2014 bind DisplayPad buttons to multi-line snippets with {date}/{time}/{clipboard}/{cursor} placeholders",
       "author": "BaseCamp Linux",
       "url": "https://github.com/ramisotti13-eng/basecamp-plugins/tree/main/snippets"

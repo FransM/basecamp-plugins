@@ -9,7 +9,7 @@ Placeholders inside the snippet text are expanded just before typing:
   {time}      → 14:23
   {datetime}  → 2026-05-14 14:23
   {clipboard} → current clipboard content (wl-paste / xclip)
-  {cursor}    → cursor stops here after typing (sends Left-arrow keypresses)
+  {cursor}    → cursor stops here after typing (walks back with arrow keys)
 """
 import json
 import os
@@ -19,6 +19,9 @@ import time
 from datetime import datetime
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw, ImageFont
+
+_TILE = 102     # a DisplayPad key
 
 try:
     from shared.ui_helpers import BG, BG2, BG3, FG, FG2, BLUE, GRN, RED, YLW, BORDER
@@ -43,7 +46,11 @@ def _get_clipboard():
 
 
 def _expand(text):
-    """Substitute placeholders. Returns (expanded_text, cursor_offset_from_end)."""
+    """Substitute placeholders. Returns (expanded_text, keys_back_to_cursor).
+
+    The second value is the keys to press after the text has been typed, to
+    put the cursor where {cursor} was.
+    """
     now = datetime.now()
     text = text.replace("{date}", now.strftime("%Y-%m-%d"))
     text = text.replace("{time}", now.strftime("%H:%M"))
@@ -51,12 +58,118 @@ def _expand(text):
     if "{clipboard}" in text:
         text = text.replace("{clipboard}", _get_clipboard())
 
-    cursor_offset = 0
-    if "{cursor}" in text:
-        idx = text.index("{cursor}")
-        text = text.replace("{cursor}", "", 1)
-        cursor_offset = len(text) - idx
-    return text, cursor_offset
+    if "{cursor}" not in text:
+        return text, []
+    idx = text.index("{cursor}")
+    text = text.replace("{cursor}", "", 1)
+    return text, _keys_back_to(text, idx)
+
+
+def _keys_back_to(text, idx):
+    """The keys that walk the cursor from the end of `text` back to `idx`.
+
+    Left presses alone are what this used to send, and that only works while
+    the way back stays on one line: most editors do not wrap a Left at the
+    start of a line round to the end of the one above, so in vi a snippet
+    whose {cursor} sat above the last line left the cursor sitting at the
+    start of the last line instead (#15).
+
+    With a line to climb, the route is Home to leave the column behind, Up
+    once per line, Home again because Up keeps a column of its own, and then
+    Right to the target column. On one line it stays with Left, which needs
+    no Home and so cannot be thrown off by an editor that wraps long lines
+    visually.
+    """
+    tail = text[idx:]
+    lines_up = tail.count("\n")
+    if lines_up == 0:
+        return ["left"] * len(tail)
+    line_start = text.rfind("\n", 0, idx) + 1
+    column = idx - line_start
+    return ["home"] + ["up"] * lines_up + ["home"] + ["right"] * column
+
+
+def _font(size):
+    for path in ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                 "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                 "/usr/share/fonts/dejavu/DejaVuSans.ttf"):
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                break
+    return ImageFont.load_default()
+
+
+def _render_snippet(slot, label, preview):
+    """The key's picture: its slot number, its name, and the text beneath.
+
+    A snippet key had no picture at all, on the pad or in the editor, so
+    twelve of them were twelve blank keys (#15).
+    """
+    img = Image.new("RGB", (_TILE, _TILE), (18, 18, 34))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, _TILE - 1, 13], fill=(14, 165, 233))
+    draw.text((4, 1), "#%s" % slot, fill=(10, 10, 20), font=_font(11))
+
+    # A snippet with a name is shown by it, with the text underneath. One
+    # without falls back to its own first line, which is all there is to say.
+    first_line = next((l for l in preview.splitlines() if l.strip()), "")
+    title = label.strip() or first_line.strip()
+
+    y = 20
+    for line in _wrap(draw, title, _font(13), 3 if label.strip() else 5):
+        draw.text((5, y), line, fill=(230, 230, 240), font=_font(13))
+        y += 15
+
+    if label.strip():
+        y += 4
+        for line in _wrap(draw, " ".join(preview.split()), _font(10), 3):
+            if y > _TILE - 12:
+                break
+            draw.text((5, y), line, fill=(120, 120, 150), font=_font(10))
+            y += 12
+    return img
+
+
+def _wrap(draw, text, font, max_lines):
+    """Break text into lines that fit the key, longest first, cut with a dot."""
+    words, lines, line = text.split(), [], ""
+    for word in words:
+        candidate = ("%s %s" % (line, word)).strip()
+        box = draw.textbbox((0, 0), candidate, font=font)
+        if box[2] - box[0] > _TILE - 10 and line:
+            lines.append(line)
+            line = word
+            if len(lines) == max_lines:
+                break
+        else:
+            line = candidate
+    if line and len(lines) < max_lines:
+        lines.append(line)
+    if len(lines) == max_lines and len(" ".join(lines)) < len(text):
+        lines[-1] = lines[-1][:max(0, len(lines[-1]) - 1)] + "\u2026"
+    return lines
+
+
+def _save_frame(img, path):
+    """Write the frame beside its destination and move it into place.
+
+    The upload worker reads these files while we write them, and a PIL save
+    straight onto the destination is not atomic (#89).
+    """
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    img.save(tmp, "PNG")            # named, the extension here is .tmp
+    os.replace(tmp, path)
+
+
+def _current_page(ctx):
+    """The page that is on the pad right now, 0 if it cannot be asked."""
+    try:
+        return int(ctx.get_displaypad_current_page())
+    except Exception:
+        return 0
 
 
 class Plugin:
@@ -70,6 +183,8 @@ class Plugin:
         self._frame = None
         self._scroll = None
         self._save_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._drawn = {}              # key index -> what is on it already
         self._load()
 
         ctx.register_translations({
@@ -134,15 +249,15 @@ class Plugin:
         if not text:
             return
 
-        expanded, cursor_offset = _expand(text)
+        expanded, keys_back = _expand(text)
         try:
             from shared.macros import simulate_text, simulate_keypress
         except ImportError:
             return
 
         simulate_text(expanded)
-        for _ in range(cursor_offset):
-            simulate_keypress("left")
+        for key in keys_back:
+            simulate_keypress(key)
 
         snip["uses"] = int(snip.get("uses", 0)) + 1
         self._save()
@@ -151,6 +266,74 @@ class Plugin:
             self.ctx.schedule(0, self._refresh_use_badges)
         except Exception:
             pass
+
+    # ── The picture on the key ────────────────────────────────────────────────
+
+    def start(self):
+        """Paint the keys this plugin is on, and keep them painted.
+
+        A snippet key had no picture at all: the pad showed whatever the key
+        held before and the editor showed the plugin placeholder, so a page of
+        snippets was a page of keys you had to remember (#15). Started and
+        stopped with the page, the way the other widget plugins are.
+        """
+        self._stop.clear()
+        self._drawn.clear()
+        threading.Thread(target=self._draw_loop, daemon=True).start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _draw_loop(self):
+        while not self._stop.is_set():
+            try:
+                self._draw_keys()
+            except Exception as e:
+                # A transient failure must never end this thread, or the keys
+                # stay as they are until the plugin is disabled and enabled.
+                print(f"[snippets] draw error (continuing): {e}", flush=True)
+            self._stop.wait(2)
+
+    def _current_actions(self):
+        """The 12 actions of the page on the pad, not of the main page (#82)."""
+        try:
+            return self.ctx.get_displaypad_actions()
+        except Exception:
+            return []
+
+    def _draw_keys(self):
+        try:
+            from shared.config import CONFIG_DIR
+        except ImportError:
+            return
+        dp = self.ctx.get_displaypad()
+        page = _current_page(self.ctx)
+        for i, act in enumerate(self._current_actions()):
+            if act.get("type") != "snippet":
+                continue
+            try:
+                slot = int(str(act.get("action", "")).strip())
+            except (TypeError, ValueError):
+                continue
+            snip = self._snippets[slot - 1] if 1 <= slot <= len(self._snippets) else None
+            if snip is None:
+                continue
+            label = str(snip.get("label", ""))
+            text = str(snip.get("text", ""))
+            # Nothing to send while nothing about the key has changed: this
+            # loop runs every two seconds and the text rarely does.
+            state = (slot, label, text, page)
+            if self._drawn.get(i) == state:
+                continue
+            self._drawn[i] = state
+            img = _render_snippet(slot, label, text)
+            path = os.path.join(CONFIG_DIR, f"dp_snippet_p{page}_k{i}.png")
+            _save_frame(img, path)
+            if dp is not None:
+                dp._images[str(i)] = path
+                if hasattr(dp, "_page_images"):
+                    dp._page_images.setdefault(page, {})[str(i)] = path
+            self.ctx.push_displaypad_image(i, img)
 
     # ── Panel UI ──────────────────────────────────────────────────────────────
 
