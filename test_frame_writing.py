@@ -119,7 +119,9 @@ WIDGETS = (
 
 def render_once(plugin, plug):
     """Ask a plugin to paint its keys, whatever it calls that."""
-    for name in ("_update", "_update_displaypad", "_draw_keys"):
+    if hasattr(plug, "_draw_keys"):
+        return plug._draw_keys({})   # its own record, one per draw thread
+    for name in ("_update", "_update_displaypad"):
         method = getattr(plug, name, None)
         if method is not None:
             return method()

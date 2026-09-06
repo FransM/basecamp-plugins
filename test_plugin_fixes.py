@@ -162,6 +162,49 @@ check("and carries the bridge's own words",
 check("and still refreshes the screen, or nobody sees the reason",
       refused.ctx.scheduled == 1, refused.ctx.scheduled)
 
+# The window is rebuilt when the connection or the reason changes, and not
+# otherwise: the poll behind it runs every three seconds, and rebuilding on
+# every tick would destroy and recreate the Try again button under the
+# pointer.
+class Win:
+    _group_rows = {}
+    _light_rows = {}
+    rebuilds = 0
+
+    def _build_all(self):
+        self.rebuilds += 1
+        self._built_connected = self.p._connected
+        self._built_error = getattr(self.p, "_last_error", "")
+
+    refresh = hue.HueWindow.refresh
+
+
+class Plug:
+    _connected = False
+    _last_error = "unauthorized user"
+    _groups = {}
+    _lights = {}
+
+
+win = Win()
+win.p = Plug()
+win._build_all()
+before = win.rebuilds
+for _ in range(4):
+    win.refresh()
+check("a steady disconnected window is not rebuilt on every poll",
+      win.rebuilds == before, win.rebuilds - before)
+
+win.p._last_error = "no answer from 10.0.0.2"
+win.refresh()
+check("a new reason does rebuild it", win.rebuilds == before + 1,
+      win.rebuilds - before)
+
+win.p._connected = True
+win.refresh()
+check("and so does the bridge coming back", win.rebuilds == before + 2,
+      win.rebuilds - before)
+
 silent = fetch_with({"lights": None, "groups": None})
 check("a bridge that says nothing says so by address",
       "10.0.0.2" in silent._last_error, silent._last_error)

@@ -213,7 +213,6 @@ class Plugin:
         self._scroll = None
         self._save_lock = threading.Lock()
         self._stop = threading.Event()
-        self._drawn = {}              # key index -> what is on it already
         self._load()
 
         ctx.register_translations({
@@ -306,17 +305,15 @@ class Plugin:
         snippets was a page of keys you had to remember (#15). Started and
         stopped with the page, the way the other widget plugins are.
 
-        Each thread carries its own stop, so a stopped one can never be
-        revived: clearing one shared event would let a predecessor that had
-        not reached its next check yet carry on beside the new thread, and
-        two of them painting the same keys is two of everything. Editing a
-        key now brings the services in line straight away, so a stop followed
-        closely by a start is an ordinary thing rather than a rarity.
+        Each thread carries its own stop and its own record of what it has
+        painted, so a stopped one can never be revived and cannot write into
+        its successor's record on the way out. Editing a key now brings the
+        page's services in line straight away, so a stop followed closely by
+        a start is an ordinary thing rather than a rarity.
         """
         self._stop.set()                # any predecessor ends here
         stop = threading.Event()
         self._stop = stop
-        self._drawn.clear()
         threading.Thread(target=self._draw_loop, args=(stop,),
                          daemon=True).start()
 
@@ -324,9 +321,10 @@ class Plugin:
         self._stop.set()
 
     def _draw_loop(self, stop):
+        drawn = {}
         while not stop.is_set():
             try:
-                self._draw_keys()
+                self._draw_keys(drawn)
             except Exception as e:
                 # A transient failure must never end this thread, or the keys
                 # stay as they are until the plugin is disabled and enabled.
@@ -340,7 +338,7 @@ class Plugin:
         except Exception:
             return []
 
-    def _draw_keys(self):
+    def _draw_keys(self, drawn):
         try:
             from shared.config import CONFIG_DIR
         except ImportError:
@@ -354,17 +352,23 @@ class Plugin:
                 slot = int(str(act.get("action", "")).strip())
             except (TypeError, ValueError):
                 continue
-            snip = self._snippets[slot - 1] if 1 <= slot <= len(self._snippets) else None
-            if snip is None:
+            if slot < 1:
+                continue
+            try:
+                # Not len() then index: the panel appends and pops this list
+                # from the interface thread, and the two can fall either side
+                # of an edit.
+                snip = self._snippets[slot - 1]
+            except IndexError:
                 continue
             label = str(snip.get("label", ""))
             text = str(snip.get("text", ""))
             # Nothing to send while nothing about the key has changed: this
             # loop runs every two seconds and the text rarely does.
             state = (slot, label, text, page)
-            if self._drawn.get(i) == state:
+            if drawn.get(i) == state:
                 continue
-            self._drawn[i] = state
+            drawn[i] = state
             img = _render_snippet(slot, label, text)
             path = os.path.join(CONFIG_DIR, f"dp_snippet_p{page}_k{i}.png")
             _save_frame(img, path)

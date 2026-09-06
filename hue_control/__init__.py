@@ -172,6 +172,7 @@ class Plugin:
                 "hue_all_on":      "All On",
                 "hue_all_off":     "All Off",
                 "hue_retry":       "Try again",
+                "hue_retrying":    "Trying...",
                 "hue_toggle":      "Hue: Toggle Light",
                 "hue_scene":       "Hue: Activate Scene",
                 "hue_bri":         "Hue: Brightness",
@@ -195,6 +196,7 @@ class Plugin:
                 "hue_all_on":      "Alles an",
                 "hue_all_off":     "Alles aus",
                 "hue_retry":       "Erneut versuchen",
+                "hue_retrying":    "Versuche...",
                 "hue_toggle":      "Hue: Licht umschalten",
                 "hue_scene":       "Hue: Szene aktivieren",
                 "hue_bri":         "Hue: Helligkeit",
@@ -577,18 +579,28 @@ class Plugin:
     # ── Service ──────────────────────────────────────────────────────────────
 
     def start(self):
-        self._stop.clear()
+        """Begin polling the bridge.
+
+        Each thread carries its own stop. Clearing one shared event let a
+        predecessor that had not reached its next check carry on beside the
+        new thread, and a key edit now brings the page's services in line
+        straight away, so a stop closely followed by a start is ordinary.
+        """
+        self._stop.set()                # any predecessor ends here
+        stop = threading.Event()
+        self._stop = stop
         if self._bridge_ip and self._api_key:
-            threading.Thread(target=self._poll_loop, daemon=True).start()
+            threading.Thread(target=self._poll_loop, args=(stop,),
+                             daemon=True).start()
 
     def stop(self):
         self._stop.set()
 
-    def _poll_loop(self):
+    def _poll_loop(self, stop):
         self._fetch(include_scenes=True)
-        while not self._stop.is_set():
-            self._stop.wait(3)
-            if not self._stop.is_set():
+        while not stop.is_set():
+            stop.wait(3)
+            if not stop.is_set():
                 self._fetch()
 
 
@@ -662,17 +674,20 @@ class HueWindow(ctk.CTkToplevel):
 
         p = self.p
         self._built_connected = p._connected
+        self._built_error = getattr(p, "_last_error", "")
         if not p._connected:
-            why = getattr(p, "_last_error", "")
+            why = self._built_error
             ctk.CTkLabel(self._scroll,
                          text=why or p.ctx.T("hue_no_bridge"),
                          font=("Helvetica", 11), text_color=FG2).pack(pady=(30, 6))
             # A window that only says "not connected" leaves nothing to do
             # but close it and guess (#16). The bridge's own reason is above,
             # and this tries again without a trip back to the settings.
-            ctk.CTkButton(self._scroll, text=p.ctx.T("hue_retry"),
-                          font=("Helvetica", 11), height=30, width=140,
-                          corner_radius=4, command=self._retry).pack(pady=(0, 20))
+            retry = ctk.CTkButton(self._scroll, text=p.ctx.T("hue_retry"),
+                                  font=("Helvetica", 11), height=30, width=140,
+                                  corner_radius=4)
+            retry.configure(command=lambda b=retry: self._retry(b))
+            retry.pack(pady=(0, 20))
             self._status.configure(text=p.ctx.T("hue_disconnected"), text_color=RED)
             return
 
@@ -805,13 +820,18 @@ class HueWindow(ctk.CTkToplevel):
         """Called from plugin._on_fetched on GUI thread."""
         p = self.p
 
-        # Structure changed? Full rebuild. So does a change of connection, and
-        # so does staying disconnected: the reason and the retry button are
-        # built by _build_all, and while that view is up both row sets are
-        # empty and match a bridge that has answered nothing, so comparing
-        # them alone never noticed and Try again changed nothing (#16).
-        if (not p._connected
-                or getattr(self, "_built_connected", None) != p._connected
+        # Structure changed? Full rebuild. So does the connection coming or
+        # going, and so does the reason changing while it is gone: the reason
+        # and the retry button are built by _build_all, and while that view is
+        # up both row sets are empty and match a bridge that has answered
+        # nothing, so comparing them alone never noticed (#16).
+        #
+        # Those two and not "while disconnected", which looks equivalent and
+        # is not: this runs off a three second poll, so it would tear down and
+        # rebuild the reason and its button on every tick, and a button that
+        # is destroyed and rebuilt under the pointer is not one you can press.
+        if (getattr(self, "_built_connected", None) != p._connected
+                or getattr(self, "_built_error", None) != getattr(p, "_last_error", "")
                 or set(self._group_rows) != set(p._groups)
                 or set(self._light_rows) != set(p._lights)):
             self._build_all()
@@ -911,11 +931,29 @@ class HueWindow(ctk.CTkToplevel):
                                               f"groups/{gid}/action", {"scene": sid}),
                          daemon=True).start()
 
-    def _retry(self):
-        """Ask the bridge again, from the window that said it did not answer."""
+    def _retry(self, button=None):
+        """Ask the bridge again, from the window that said it did not answer.
+
+        The button says so itself. A rebuild is what would otherwise be the
+        only sign anything happened, and there is no rebuild when the answer
+        is the same refusal as before.
+        """
         p = self.p
-        threading.Thread(target=lambda: p._fetch(include_scenes=True),
-                         daemon=True).start()
+        if button is not None:
+            button.configure(state="disabled", text=p.ctx.T("hue_retrying"))
+
+        def done():
+            try:
+                if button is not None and button.winfo_exists():
+                    button.configure(state="normal", text=p.ctx.T("hue_retry"))
+            except Exception:
+                pass
+
+        def run():
+            p._fetch(include_scenes=True)
+            p.ctx.schedule(0, done)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _all(self, on):
         """Every light at once. Shown straight away, then confirmed.
