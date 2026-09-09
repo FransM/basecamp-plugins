@@ -173,6 +173,41 @@ CORE 0
 58°C
 ```
 
+## Practical example: battery status
+
+`examples/battery_status.py` shows the laptop's battery percentage and
+charging status, updating every 5 seconds, with the percentage turning
+green/orange/red depending on the level and whether it's discharging. It
+takes only the pipe path (the argument the plugin appends automatically):
+
+```
+/tmp/dp_battery.pipe;python3 examples/battery_status.py
+```
+
+Just assign that as the action value for "Pipe Text" on a key -- the
+plugin creates the pipe and starts the script for you, running the
+equivalent of:
+
+```bash
+python3 examples/battery_status.py /tmp/dp_battery.pipe
+```
+
+It uses `psutil` (already bundled with the BaseCamp Linux AppImage) to read
+battery info via `psutil.sensors_battery()`. It writes a JSON message to
+the pipe every 5 seconds with a title line, a colored percentage line, and
+a status line, e.g. rendering something like:
+
+```
+Battery
+72%
+Discharging
+```
+
+The percentage is red if the battery is discharging and below 15%, orange
+if below 30% (regardless of charging state), and green otherwise. The
+status line shows "Charging", "Full" or "Discharging". On a machine with
+no battery (desktop, VM, container), it shows "N/A" / "No battery" instead.
+
 ## How it works internally
 
 Like `dp_clock`, this plugin registers an action type (`pipe_text`) and runs
